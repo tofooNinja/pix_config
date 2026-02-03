@@ -28,9 +28,6 @@
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
 
-  # Initrd SSH authorized keys (for remote LUKS unlock)
-  boot.initrd.users.users.root.openssh.authorizedKeys.keys = hostConfig.initrdSshKeys;
-
   # Security settings
   security = {
     polkit.enable = true;
