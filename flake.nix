@@ -1,5 +1,5 @@
 {
-  description = "Minimal encrypted NixOS configuration for Raspberry Pi 5 (px5n0)";
+  description = "Minimal encrypted NixOS configuration for Raspberry Pi 5";
 
   nixConfig = {
     bash-prompt = "[pix5-minimal-encrypted] ➜ ";
@@ -42,7 +42,7 @@
 
     #
     # ══════════════════════════════════════════════════════════════════════════
-    # CONFIGURABLE SETTINGS - Edit these values for your deployment
+    # SHARED SETTINGS - Common to all devices
     # ══════════════════════════════════════════════════════════════════════════
     #
 
@@ -68,12 +68,96 @@
 
     #
     # ══════════════════════════════════════════════════════════════════════════
+    # PER-DEVICE DISK CONFIGURATIONS
+    # ══════════════════════════════════════════════════════════════════════════
+    # Define additional disks for each device here.
+    # The SD card configuration is shared and defined in disko.nix.
+    #
+    # Example NVMe data disk:
+    #   nvme0 = {
+    #     type = "disk";
+    #     device = "/dev/nvme0n1";
+    #     content = {
+    #       type = "gpt";
+    #       partitions = {
+    #         data = {
+    #           size = "100%";
+    #           content = {
+    #             type = "filesystem";
+    #             format = "ext4";
+    #             mountpoint = "/data";
+    #             mountOptions = ["noatime"];
+    #           };
+    #         };
+    #       };
+    #     };
+    #   };
     #
 
-    # Bundle all configurable settings for module access
-    hostConfig = {
-      inherit primaryUser usbKeyUuid sshKeys initrdSshKeys initrdSshPort;
+    # px5n0: No additional disks (SD card only)
+    px5n0Disks = {};
+
+    # px5n1: No additional disks (SD card only)
+    # Uncomment and modify to add an NVMe drive:
+    # px5n1Disks = {
+    #   nvme0 = {
+    #     type = "disk";
+    #     device = "/dev/nvme0n1";
+    #     content = {
+    #       type = "gpt";
+    #       partitions = {
+    #         data = {
+    #           size = "100%";
+    #           content = {
+    #             type = "filesystem";
+    #             format = "ext4";
+    #             mountpoint = "/data";
+    #             mountOptions = ["noatime"];
+    #           };
+    #         };
+    #       };
+    #     };
+    #   };
+    # };
+    px5n1Disks = {};
+
+    #
+    # ══════════════════════════════════════════════════════════════════════════
+    #
+
+    # Helper to create hostConfig with device-specific settings
+    mkHostConfig = extraDisks: {
+      inherit primaryUser usbKeyUuid sshKeys initrdSshKeys initrdSshPort extraDisks;
     };
+
+    # Helper function to create a Pi 5 configuration
+    mkPi5System = {
+      hostname,
+      extraDisks ? {},
+    }:
+      nixos-raspberrypi.lib.nixosSystemFull {
+        specialArgs = inputs // {hostConfig = mkHostConfig extraDisks;};
+        modules = [
+          # Core configuration modules
+          ./hardware.nix
+          ./disko.nix
+          ./boot.nix
+          ./networking.nix
+          ./users.nix
+          ./packages.nix
+          ./console.nix
+
+          # Disko module for disk management
+          disko.nixosModules.disko
+
+          # System identity and state
+          {
+            networking.hostName = hostname;
+            time.timeZone = "UTC";
+            system.stateVersion = "24.05";
+          }
+        ];
+      };
   in {
     # Development shell with useful tools
     devShells = forSystems allSystems (system: let
@@ -93,28 +177,15 @@
     packages.x86_64-linux.default = nixos-anywhere.packages.x86_64-linux.default;
     packages.aarch64-linux.default = nixos-anywhere.packages.aarch64-linux.default;
 
-    nixosConfigurations.px5n0 = nixos-raspberrypi.lib.nixosSystemFull {
-      specialArgs = inputs // {inherit hostConfig;};
-      modules = [
-        # Core configuration modules
-        ./hardware.nix
-        ./disko.nix
-        ./boot.nix
-        ./networking.nix
-        ./users.nix
-        ./packages.nix
-        ./console.nix
-
-        # Disko module for disk management
-        disko.nixosModules.disko
-
-        # System identity and state
-        {
-          networking.hostName = "px5n0";
-          time.timeZone = "UTC";
-          system.stateVersion = "24.05";
-        }
-      ];
+    nixosConfigurations = {
+      px5n0 = mkPi5System {
+        hostname = "px5n0";
+        extraDisks = px5n0Disks;
+      };
+      px5n1 = mkPi5System {
+        hostname = "px5n1";
+        extraDisks = px5n1Disks;
+      };
     };
   };
 }

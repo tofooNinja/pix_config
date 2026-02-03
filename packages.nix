@@ -22,5 +22,7 @@
     pciutils
     usbutils
 
+    # Serial/terminal tools
+    screen
   ];
 }
