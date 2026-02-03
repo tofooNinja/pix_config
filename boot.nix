@@ -80,28 +80,60 @@
           ./keys/initrd_host_ed25519
         ];
         authorizedKeys = config.users.users.root.openssh.authorizedKeys.keys;
+        shell = "${pkgs.bashInteractive}/bin/bash";
       };
     };
+
+    # For systemd initrd: create /bin/cryptsetup-askpass that sshd expects
+    # This gives you a bash shell; run 'systemd-tty-ask-password-agent' to unlock LUKS
+    systemd.storePaths = [ pkgs.bashInteractive ];
+    systemd.users.root.shell = "${pkgs.bashInteractive}/bin/bash";
+    # systemd.users.root.shell = "/bin/cryptsetup-askpass";
+    # systemd.contents."bin/cryptsetup-askpass" = { source = "${pkgs.bashInteractive}/bin/bash";
+    # target = "/bin/cryptsetup-askpass";
+    # };
+
+    systemd.initrdBin = [
+      (pkgs.writeScriptBin "cryptsetup-askpass" ''
+        #!${pkgs.bash}/bin/sh
+        exec ${pkgs.bashInteractive}/bin/bash "$@"
+      '')
+    ];
 
     systemd.network.enable = true;
 
     # Service to mount USB key containing LUKS keyfile
-    systemd.services.mount-usb-key = {
-      description = "Mount USB stick containing LUKS key";
+    # systemd.services.mount-usb-key = {
+    #   description = "Mount USB stick containing LUKS key";
+    #   wantedBy = ["cryptsetup-pre.target"];
+    #   before = ["cryptsetup-pre.target"];
+    #   after = ["systemd-udev-settle.service"];
+    #   unitConfig.DefaultDependencies = false;
+    #   serviceConfig = {
+    #     Type = "oneshot";
+    #     RemainAfterExit = true;
+    #   };
+    #   script = ''
+    #     mkdir -m 0755 -p /usbstick
+    #     sleep 2
+    #     mount -t vfat -o ro /dev/disk/by-uuid/${hostConfig.usbKeyUuid} /usbstick
+    #   '';
+    # };
+
+    # Mount USB key for LUKS keyfile (runs before cryptsetup)
+    systemd.mounts = [{
+      what = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
+      where = "/usbstick";
+      type = "vfat";
+      options = "ro";
       wantedBy = ["cryptsetup-pre.target"];
       before = ["cryptsetup-pre.target"];
-      after = ["systemd-udev-settle.service"];
-      unitConfig.DefaultDependencies = false;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
+      after = ["dev-disk-by\\x2duuid-${hostConfig.usbKeyUuid}.device"];
+      unitConfig = {
+        DefaultDependencies = false;
+        ConditionPathExists = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
       };
-      script = ''
-        mkdir -m 0755 -p /usbstick
-        sleep 2
-        mount -t vfat -o ro /dev/disk/by-uuid/${hostConfig.usbKeyUuid} /usbstick
-      '';
-    };
+    }];
 
     # LUKS device configuration
     luks.devices.crypted = {
@@ -110,5 +142,19 @@
       allowDiscards = true;
       keyFileTimeout = 10; # Fall back to password after 10 seconds
     };
+  };
+
+  # USB key mount for runtime access (automounts on access)
+  fileSystems."/mnt/usb" = {
+    device = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
+    fsType = "vfat";
+    options = [
+      "noauto"                     # Don't mount immediately at boot
+      "nofail"                     # Don't fail boot if drive is missing
+      "x-systemd.automount"        # Trigger mount on access
+      "x-systemd.idle-timeout=60s" # Unmount after 60s of inactivity
+      "x-systemd.device-timeout=5s" # Short wait if device isn't there
+      # "x-initrd.mount"             # Ensure this rule is available in initrd
+    ];
   };
 }
