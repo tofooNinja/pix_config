@@ -4,15 +4,18 @@
 #   - USB key-based LUKS unlock with password fallback
 #   - SSH access during initrd for remote unlock
 #   - Early network boot support
+#
+# Configurable via flake.nix:
+#   - hostConfig.usbKeyUuid
+#   - hostConfig.initrdSshKeys
+#   - hostConfig.initrdSshPort
 {
   config,
   lib,
   pkgs,
+  hostConfig,
   ...
-}: let
-  # USB key UUID for automatic LUKS unlock
-  usbKeyUuid = "8480-1149";
-in {
+}: {
   # Bootloader configuration
   boot = {
     tmp.useTmpfs = true;
@@ -25,8 +28,10 @@ in {
       variant = "5";
     };
 
-    # Enable DHCP during early boot (for initrd SSH)
-    kernelParams = ["ip=dhcp"];
+    # Kernel parameters for early boot
+    kernelParams = [
+      "ip=dhcp" # Enable DHCP during early boot (for initrd SSH)
+    ];
   };
 
   # Initrd configuration for LUKS unlock
@@ -69,7 +74,7 @@ in {
       enable = true;
       ssh = {
         enable = true;
-        port = 42069;
+        port = hostConfig.initrdSshPort;
         hostKeys = [
           ./keys/initrd_host_rsa
           ./keys/initrd_host_ed25519
@@ -94,7 +99,7 @@ in {
       script = ''
         mkdir -m 0755 -p /usbstick
         sleep 2
-        mount -t vfat -o ro /dev/disk/by-uuid/${usbKeyUuid} /usbstick
+        mount -t vfat -o ro /dev/disk/by-uuid/${hostConfig.usbKeyUuid} /usbstick
       '';
     };
 

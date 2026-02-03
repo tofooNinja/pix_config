@@ -1,7 +1,7 @@
 # Raspberry Pi 5 Hardware Configuration
 #
 # This module configures hardware-specific settings for the Raspberry Pi 5,
-# including the bootloader, display drivers, and config.txt options.
+# including the bootloader, display drivers, config.txt options, and GPIO UART debugging.
 {
   config,
   pkgs,
@@ -74,6 +74,29 @@
           enable = lib.mkDefault true;
           value = lib.mkDefault true;
         };
+
+        #
+        # ══════════════════════════════════════════════════════════════════════
+        # GPIO UART DEBUG OUTPUT
+        # ══════════════════════════════════════════════════════════════════════
+        # Enables serial console on GPIO pins 14 (TX) and 15 (RX)
+        # Physical pins 8 (TX) and 10 (RX) on the 40-pin header
+        # Connect with: screen /dev/ttyUSB0 115200
+        #
+
+        # Enable primary UART on GPIO 14/15
+        # https://www.raspberrypi.com/documentation/computers/config_txt.html#enable_uart
+        enable_uart = {
+          enable = true;
+          value = true;
+        };
+
+        # Enable debug logging to UART during boot (bootloader/start.elf)
+        # https://www.raspberrypi.com/documentation/computers/config_txt.html#uart_2ndstage
+        uart_2ndstage = {
+          enable = true;
+          value = true;
+        };
       };
 
       # Device tree parameters
@@ -99,6 +122,14 @@
       };
     };
   };
+
+  # Kernel parameters for serial console debugging
+  boot.kernelParams = [
+    # Enable serial console on GPIO UART (primary console for boot messages)
+    "console=serial0,115200"
+    # Also keep tty1 as fallback console for HDMI
+    "console=tty1"
+  ];
 
   # System identification tags
   system.nixos.tags = let

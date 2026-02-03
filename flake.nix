@@ -39,6 +39,41 @@
   } @ inputs: let
     allSystems = nixpkgs.lib.systems.flakeExposed;
     forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f system);
+
+    #
+    # ══════════════════════════════════════════════════════════════════════════
+    # CONFIGURABLE SETTINGS - Edit these values for your deployment
+    # ══════════════════════════════════════════════════════════════════════════
+    #
+
+    # Primary user account name
+    primaryUser = "tofoo";
+
+    # USB key UUID for automatic LUKS unlock (find with: lsblk -o NAME,UUID)
+    usbKeyUuid = "8480-1149";
+
+    # SSH public keys for authorized access
+    sshKeys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
+    ];
+
+    # SSH keys specifically for initrd (remote LUKS unlock)
+    initrdSshKeys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@space"
+    ];
+
+    # Initrd SSH port for remote LUKS unlock
+    initrdSshPort = 42069;
+
+    #
+    # ══════════════════════════════════════════════════════════════════════════
+    #
+
+    # Bundle all configurable settings for module access
+    hostConfig = {
+      inherit primaryUser usbKeyUuid sshKeys initrdSshKeys initrdSshPort;
+    };
   in {
     # Development shell with useful tools
     devShells = forSystems allSystems (system: let
@@ -58,8 +93,8 @@
     packages.x86_64-linux.default = nixos-anywhere.packages.x86_64-linux.default;
     packages.aarch64-linux.default = nixos-anywhere.packages.aarch64-linux.default;
 
-    nixosConfigurations.pix5n0 = nixos-raspberrypi.lib.nixosSystemFull {
-      specialArgs = inputs;
+    nixosConfigurations.px5n0 = nixos-raspberrypi.lib.nixosSystemFull {
+      specialArgs = inputs // {inherit hostConfig;};
       modules = [
         # Core configuration modules
         ./hardware.nix
@@ -68,7 +103,7 @@
         ./networking.nix
         ./users.nix
         ./packages.nix
-        # ./console.nix
+        ./console.nix
 
         # Disko module for disk management
         disko.nixosModules.disko

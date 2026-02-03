@@ -1,17 +1,17 @@
 # User Configuration
+#
+# Configurable via flake.nix:
+#   - hostConfig.primaryUser
+#   - hostConfig.sshKeys
+#   - hostConfig.initrdSshKeys
 {
   config,
   lib,
+  hostConfig,
   ...
-}: let
-  # SSH public keys for authorized access
-  sshKeys = [
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
-  ];
-in {
+}: {
   # Primary user account
-  users.users.tofoo = {
+  users.users.${hostConfig.primaryUser} = {
     isNormalUser = true;
     extraGroups = [
       "wheel"
@@ -19,17 +19,17 @@ in {
       "video"
     ];
     initialHashedPassword = "nix";
-    openssh.authorizedKeys.keys = sshKeys;
+    openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
 
   # Root user configuration
   users.users.root = {
     initialHashedPassword = "nix";
-    openssh.authorizedKeys.keys = sshKeys;
+    openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
 
   # Initrd SSH authorized keys (for remote LUKS unlock)
-  boot.initrd.users.users.root.openssh.authorizedKeys.keys = sshKeys;
+  boot.initrd.users.users.root.openssh.authorizedKeys.keys = hostConfig.initrdSshKeys;
 
   # Security settings
   security = {
@@ -41,7 +41,7 @@ in {
   };
 
   # Auto-login for console
-  services.getty.autologinUser = "tofoo";
+  services.getty.autologinUser = hostConfig.primaryUser;
 
   # SSH server configuration
   services.openssh = {
@@ -51,7 +51,7 @@ in {
 
   # Nix trusted users for remote operations
   nix.settings = {
-    trusted-users = ["nixos" "tofoo" "root"];
+    trusted-users = ["nixos" hostConfig.primaryUser "root"];
     download-buffer-size = 500000000;
   };
 }

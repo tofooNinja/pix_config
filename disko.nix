@@ -1,9 +1,9 @@
 # Disk Configuration with LUKS Encryption
 #
 # Partition layout for SD card:
-#   1. FIRMWARE (1GB)  - FAT32, Pi firmware partition
-#   2. ESP (1GB)       - FAT32, EFI System Partition for bootloader
-#   3. log (8GB)       - ext4, dedicated /var/log partition
+#   1. FIRMWARE (1GB)  - FAT32, Pi firmware partition (automount on access)
+#   2. ESP (1GB)       - FAT32, EFI System Partition for bootloader (automount on access)
+#   3. log (8GB)       - ext4, dedicated /var/log partition (mounted at boot)
 #   4. system (rest)   - LUKS encrypted ext4, root filesystem
 {lib, ...}: let
   # Reusable partition definitions
@@ -16,10 +16,10 @@
       type = "filesystem";
       format = "vfat";
       mountOptions = [
-        "noatime"
-        "noauto"
-        "x-systemd.automount"
-        "x-systemd.idle-timeout=1min"
+        "noatime" # Don't update access times (reduces writes)
+        # "noauto" # Don't mount at boot
+        "x-systemd.automount" # Mount on first access
+        # "x-systemd.idle-timeout=1min" # Unmount after 1 minute idle
       ];
     };
   };
@@ -32,11 +32,11 @@
       type = "filesystem";
       format = "vfat";
       mountOptions = [
-        "noatime"
-        "noauto"
-        "x-systemd.automount"
-        "x-systemd.idle-timeout=1min"
-        "umask=0077"
+        "noatime" # Don't update access times
+        # "noauto" # Don't mount at boot
+        "x-systemd.automount" # Mount on first access
+        # "x-systemd.idle-timeout=1min" # Unmount after idle
+        "umask=0077" # Restrictive permissions (owner only)
       ];
     };
   };
@@ -47,6 +47,9 @@ in {
     ext4 = true;
   };
 
+  # Ensure /var/log is mounted early for boot logging
+  fileSystems."/var/log".neededForBoot = true;
+
   disko.devices = {
     disk.sd = {
       type = "disk";
@@ -54,19 +57,19 @@ in {
       content = {
         type = "gpt";
         partitions = {
-          # Pi firmware partition
+          # Pi firmware partition - automount on access
           FIRMWARE = firmwarePartition {
             label = "FIRMWARE";
             content.mountpoint = "/boot/firmware";
           };
 
-          # EFI System Partition
+          # EFI System Partition - automount on access
           ESP = espPartition {
             label = "ESP";
             content.mountpoint = "/boot";
           };
 
-          # Dedicated log partition (unencrypted for boot diagnostics)
+          # Dedicated log partition - always mounted for boot diagnostics
           log = {
             type = "8300"; # Linux filesystem
             size = "8G";
@@ -75,11 +78,8 @@ in {
               format = "ext4";
               mountpoint = "/var/log";
               mountOptions = [
-                "noatime"
-                "noauto"
-                "x-systemd.automount"
-                "x-systemd.idle-timeout=1min"
-                "umask=0077"
+                "noatime" # Reduce writes
+                "commit=60" # Sync every 60s (balance between safety and SD wear)
               ];
             };
           };
@@ -100,11 +100,8 @@ in {
                 format = "ext4";
                 mountpoint = "/";
                 mountOptions = [
-                  "noatime"
-                  "noauto"
-                  "x-systemd.automount"
-                  "x-systemd.idle-timeout=1min"
-                  "umask=0077"
+                  "noatime" # Reduce writes
+                  "commit=60" # Sync every 60s
                 ];
               };
             };
