@@ -1,0 +1,7 @@
+# Private SSH host keys (keep .pub files in version control)
+keys/initrd_host_rsa
+keys/initrd_host_ed25519
+
+# Nix build outputs
+result
+result-*
