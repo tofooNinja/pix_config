@@ -170,6 +170,14 @@
           nix-output-monitor
           nixos-anywhere.packages.${system}.default
         ];
+
+        shellHook = ''
+          # Configure git to use the project's hooks
+          if [ -d .git ]; then
+            git config core.hooksPath .githooks
+            echo "Git hooks configured to use .githooks/"
+          fi
+        '';
       };
     });
 
