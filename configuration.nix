@@ -222,7 +222,7 @@
     tealdeer
 
     # System
-    bottom
+    btop
     duf
     lshw
     pciutils
