@@ -70,7 +70,7 @@
         # Dedicated log partition - always mounted for boot diagnostics
         log = {
           type = "8300"; # Linux filesystem
-          size = "8G";
+          size = "5G";
           content = {
             type = "filesystem";
             format = "ext4";

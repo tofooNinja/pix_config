@@ -126,7 +126,7 @@ initrdSshPort = 42069;  # Change this
 |-----------|------|------|-------------|
 | FIRMWARE | 1GB | FAT32 | /boot/firmware |
 | ESP | 1GB | FAT32 | /boot |
-| log | 8GB | ext4 | /var/log |
+| log | 5GB | ext4 | /var/log |
 | system | Remaining | LUKS/ext4 | / |
 
 ## Troubleshooting

@@ -1,8 +1,28 @@
-# System Packages - Bare Minimum
+# System Packages
 {pkgs, ...}: {
   environment.systemPackages = with pkgs; [
-    vim       # Editor
-    git       # Version control
-    htop      # Process monitoring
+    # File management
+    tree
+
+    # Editors
+    vim
+    neovim
+
+    # Version control
+    git
+    tig
+
+    # Documentation
+    tealdeer
+
+    # System
+    bottom
+    duf
+    lshw
+    pciutils
+    usbutils
+
+    # Serial/terminal tools
+    screen
   ];
 }
