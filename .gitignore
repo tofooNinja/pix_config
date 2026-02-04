@@ -5,5 +5,3 @@
 # Nix build outputs
 result
 result-*
-formatting-patch.zip
-formatting.patch
