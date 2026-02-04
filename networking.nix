@@ -4,7 +4,7 @@
 #   - systemd-networkd for network management
 #   - iwd for WiFi (user-friendly CLI)
 #   - mDNS support for local discovery
-{lib, ...}: {
+{ lib, ... }: {
   networking = {
     useNetworkd = true;
 

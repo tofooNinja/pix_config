@@ -33,12 +33,11 @@
 #   - hostConfig.usbKeyUuid    - UUID of USB stick with LUKS keyfile
 #   - hostConfig.initrdSshKeys - SSH public keys for remote unlock
 #   - hostConfig.initrdSshPort - SSH port during initrd (default: 22)
-{
-  config,
-  lib,
-  pkgs,
-  hostConfig,
-  ...
+{ config
+, lib
+, pkgs
+, hostConfig
+, ...
 }: {
   # Bootloader configuration
   boot = {
@@ -150,9 +149,9 @@
       where = "/usbstick";
       type = "vfat";
       options = "ro";
-      wantedBy = ["cryptsetup-pre.target"];
-      before = ["cryptsetup-pre.target"];
-      after = ["dev-disk-by\\x2duuid-${hostConfig.usbKeyUuid}.device"];
+      wantedBy = [ "cryptsetup-pre.target" ];
+      before = [ "cryptsetup-pre.target" ];
+      after = [ "dev-disk-by\\x2duuid-${hostConfig.usbKeyUuid}.device" ];
       unitConfig = {
         DefaultDependencies = false;
         ConditionPathExists = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
@@ -173,9 +172,9 @@
     device = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
     fsType = "vfat";
     options = [
-      "noauto"                     # Don't mount immediately at boot
-      "nofail"                     # Don't fail boot if drive is missing
-      "x-systemd.automount"        # Trigger mount on access
+      "noauto" # Don't mount immediately at boot
+      "nofail" # Don't fail boot if drive is missing
+      "x-systemd.automount" # Trigger mount on access
       "x-systemd.idle-timeout=60s" # Unmount after 60s of inactivity
       "x-systemd.device-timeout=5s" # Short wait if device isn't there
       # "x-initrd.mount"             # Ensure this rule is available in initrd

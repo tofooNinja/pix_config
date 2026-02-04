@@ -1,5 +1,5 @@
 # System Packages
-{pkgs, ...}: {
+{ pkgs, ... }: {
   environment.systemPackages = with pkgs; [
     # File management
     tree

@@ -57,16 +57,16 @@
 #
 # Additional disks can be configured per-device via hostConfig.extraDisks
 # See flake.nix for examples.
-{
-  lib,
-  hostConfig,
-  ...
-}: let
+{ lib
+, hostConfig
+, ...
+}:
+let
   # Reusable partition definitions
   firmwarePartition = lib.recursiveUpdate {
     priority = 1;
     type = "0700"; # Microsoft basic data
-    attributes = [0]; # Required Partition
+    attributes = [ 0 ]; # Required Partition
     size = "1024M";
     content = {
       type = "filesystem";
@@ -82,7 +82,7 @@
 
   espPartition = lib.recursiveUpdate {
     type = "EF00"; # EFI System Partition
-    attributes = [2]; # Legacy BIOS Bootable (for U-Boot)
+    attributes = [ 2 ]; # Legacy BIOS Bootable (for U-Boot)
     size = "1024M";
     content = {
       type = "filesystem";
@@ -158,8 +158,9 @@
   };
 
   # Get extra disks from hostConfig, default to empty
-  extraDisks = hostConfig.extraDisks or {};
-in {
+  extraDisks = hostConfig.extraDisks or { };
+in
+{
   # Required filesystem support
   boot.supportedFilesystems = {
     vfat = true;
@@ -214,6 +215,6 @@ in {
 
   # Merge SD card config with any extra disks from hostConfig
   disko.devices = {
-    disk = {sd = sdCardDisk;} // extraDisks;
+    disk = { sd = sdCardDisk; } // extraDisks;
   };
 }
