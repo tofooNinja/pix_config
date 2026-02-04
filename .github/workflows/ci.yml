@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - 'cursor/**'  # Also run on cursor agent branches for auto-formatting
   pull_request:
     branches:
       - main
