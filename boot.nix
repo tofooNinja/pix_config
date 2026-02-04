@@ -1,13 +1,11 @@
-# Boot Configuration with LUKS Unlock via USB Key
+# Boot Configuration with LUKS Unlock
 #
 # Features:
-#   - USB key-based LUKS unlock with password fallback
-#   - SSH access during initrd for remote unlock
-#   - Early network boot support
+#   - Password-based LUKS unlock via keyboard or SSH
+#   - SSH access during initrd for remote unlock on 10.13.12.249:42069
+#   - Static IP: 10.13.12.249 during early boot
 #
 # Configurable via flake.nix:
-#   - hostConfig.usbKeyUuid
-#   - hostConfig.initrdSshKeys
 #   - hostConfig.initrdSshPort
 {
   config,
@@ -29,31 +27,24 @@
     };
 
     # Kernel parameters for early boot
+    # Static IP: ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>
     kernelParams = [
-      "ip=dhcp" # Enable DHCP during early boot (for initrd SSH)
+      "ip=10.13.12.249::10.13.12.1:255.255.255.0::eth0:off"
     ];
   };
 
   # Initrd configuration for LUKS unlock
   boot.initrd = {
-    # Kernel modules needed for USB key and display
+    # Kernel modules needed for display, keyboard and networking
     kernelModules = [
-      # Display/graphics
+      # Display/graphics (for password prompt on screen)
       "vc4"
       "bcm2835_dma"
       "i2c_bcm2835"
       "bcm2712-rpi-5-b"
       "pcie_brcmstb"
       "reset-raspberrypi"
-      # USB storage
-      "usbcore"
-      "usb_storage"
-      "uas"
-      # Filesystem support
-      "vfat"
-      "nls_cp437"
-      "nls_iso8859_1"
-      # Networking
+      # Networking (for SSH access during boot)
       "rp1"
     ];
 
@@ -66,10 +57,7 @@
       "evdev"
     ];
 
-    # Enable systemd in initrd
-    systemd.enable = true;
-
-    # Network configuration for early boot
+    # Network configuration for early boot SSH access
     network = {
       enable = true;
       ssh = {
@@ -80,81 +68,20 @@
           ./keys/initrd_host_ed25519
         ];
         authorizedKeys = config.users.users.root.openssh.authorizedKeys.keys;
-        shell = "${pkgs.bashInteractive}/bin/bash";
       };
     };
 
-    # For systemd initrd: create /bin/cryptsetup-askpass that sshd expects
-    # This gives you a bash shell; run 'systemd-tty-ask-password-agent' to unlock LUKS
-    systemd.storePaths = [ pkgs.bashInteractive ];
-    systemd.users.root.shell = "${pkgs.bashInteractive}/bin/bash";
-    # systemd.users.root.shell = "/bin/cryptsetup-askpass";
-    # systemd.contents."bin/cryptsetup-askpass" = { source = "${pkgs.bashInteractive}/bin/bash";
-    # target = "/bin/cryptsetup-askpass";
-    # };
+    # Enable systemd in initrd for network and password prompts
+    systemd = {
+      enable = true;
+      network.enable = true;
+    };
 
-    systemd.initrdBin = [
-      (pkgs.writeScriptBin "cryptsetup-askpass" ''
-        #!${pkgs.bash}/bin/sh
-        exec ${pkgs.bashInteractive}/bin/bash "$@"
-      '')
-    ];
-
-    systemd.network.enable = true;
-
-    # Service to mount USB key containing LUKS keyfile
-    # systemd.services.mount-usb-key = {
-    #   description = "Mount USB stick containing LUKS key";
-    #   wantedBy = ["cryptsetup-pre.target"];
-    #   before = ["cryptsetup-pre.target"];
-    #   after = ["systemd-udev-settle.service"];
-    #   unitConfig.DefaultDependencies = false;
-    #   serviceConfig = {
-    #     Type = "oneshot";
-    #     RemainAfterExit = true;
-    #   };
-    #   script = ''
-    #     mkdir -m 0755 -p /usbstick
-    #     sleep 2
-    #     mount -t vfat -o ro /dev/disk/by-uuid/${hostConfig.usbKeyUuid} /usbstick
-    #   '';
-    # };
-
-    # Mount USB key for LUKS keyfile (runs before cryptsetup)
-    systemd.mounts = [{
-      what = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
-      where = "/usbstick";
-      type = "vfat";
-      options = "ro";
-      wantedBy = ["cryptsetup-pre.target"];
-      before = ["cryptsetup-pre.target"];
-      after = ["dev-disk-by\\x2duuid-${hostConfig.usbKeyUuid}.device"];
-      unitConfig = {
-        DefaultDependencies = false;
-        ConditionPathExists = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
-      };
-    }];
-
-    # LUKS device configuration
+    # LUKS device configuration - password only (bare minimum)
     luks.devices.crypted = {
       device = "/dev/disk/by-partlabel/disk-sd-system";
-      keyFile = "/usbstick/crypto_keyfile.bin";
       allowDiscards = true;
-      keyFileTimeout = 10; # Fall back to password after 10 seconds
+      # No keyFile = prompts for password via keyboard or SSH
     };
-  };
-
-  # USB key mount for runtime access (automounts on access)
-  fileSystems."/mnt/usb" = {
-    device = "/dev/disk/by-uuid/${hostConfig.usbKeyUuid}";
-    fsType = "vfat";
-    options = [
-      "noauto"                     # Don't mount immediately at boot
-      "nofail"                     # Don't fail boot if drive is missing
-      "x-systemd.automount"        # Trigger mount on access
-      "x-systemd.idle-timeout=60s" # Unmount after 60s of inactivity
-      "x-systemd.device-timeout=5s" # Short wait if device isn't there
-      # "x-initrd.mount"             # Ensure this rule is available in initrd
-    ];
   };
 }

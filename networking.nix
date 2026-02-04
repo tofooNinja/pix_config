@@ -1,49 +1,42 @@
 # Network Configuration
 #
 # Features:
+#   - Static IP: 10.13.12.249 (same during boot and in main system)
 #   - systemd-networkd for network management
-#   - iwd for WiFi (user-friendly CLI)
-#   - mDNS support for local discovery
+#   - SSH accessible on port 22 (main system) and 42069 (initrd)
 {lib, ...}: {
   networking = {
     useNetworkd = true;
 
-    # Firewall settings
-    firewall = {
-      enable = false;
-      # allowedUDPPorts = [5353]; # mDNS
-      # logRefusedConnections = lib.mkDefault false;
-    };
+    # Firewall disabled for simplicity
+    firewall.enable = false;
 
-    # Disable wpa_supplicant, use iwd instead
+    # Disable wpa_supplicant (not needed for wired connection)
     wireless.enable = false;
-    # wireless.iwd = {
-    #   enable = true;
-    #   settings = {
-    #     Network = {
-    #       EnableIPv6 = true;
-    #       RoutePriorityOffset = 300;
-    #     };
-    #     Settings.AutoConnect = true;
-    #   };
-    # };
   };
 
-  # systemd-networkd configuration
-  systemd.network.networks = {
-    "99-ethernet-default-dhcp".networkConfig.MulticastDNS = "yes";
-    # "99-wireless-client-dhcp".networkConfig.MulticastDNS = "yes";
+  # systemd-networkd configuration with static IP
+  systemd.network = {
+    enable = true;
+
+    networks."10-ethernet" = {
+      matchConfig.Name = "eth* en*";
+      address = ["10.13.12.249/24"];
+      gateway = ["10.13.12.1"];
+      dns = ["10.13.12.1"];
+      networkConfig = {
+        DHCP = "no";
+        MulticastDNS = "yes";
+      };
+    };
   };
 
   # Network service stability during upgrades
   systemd.services = {
-    # Don't take down networking during upgrades
     systemd-networkd.stopIfChanged = false;
     systemd-resolved.stopIfChanged = false;
   };
 
-  # Disable wait-online (the concept of "online" is problematic)
-  # See: https://github.com/systemd/systemd/blob/e1b45a756f71deac8c1aa9a008bd0dab47f64777/NEWS#L13
-  systemd.services.NetworkManager-wait-online.enable = false;
+  # Disable wait-online
   systemd.network.wait-online.enable = false;
 }

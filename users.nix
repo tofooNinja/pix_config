@@ -3,7 +3,6 @@
 # Configurable via flake.nix:
 #   - hostConfig.primaryUser
 #   - hostConfig.sshKeys
-#   - hostConfig.initrdSshKeys
 {
   config,
   lib,

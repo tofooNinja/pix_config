@@ -49,21 +49,13 @@
     # Primary user account name
     primaryUser = "tofoo";
 
-    # USB key UUID for automatic LUKS unlock (find with: lsblk -o NAME,UUID)
-    usbKeyUuid = "8480-1149";
-
-    # SSH public keys for authorized access
+    # SSH public keys for authorized access (both initrd and main system)
     sshKeys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
     ];
 
-    # SSH keys specifically for initrd (remote LUKS unlock)
-    initrdSshKeys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@space"
-    ];
-
-    # Initrd SSH port for remote LUKS unlock
+    # Initrd SSH port for remote LUKS unlock (main system uses port 22)
     initrdSshPort = 42069;
 
     #
@@ -127,7 +119,7 @@
 
     # Helper to create hostConfig with device-specific settings
     mkHostConfig = extraDisks: {
-      inherit primaryUser usbKeyUuid sshKeys initrdSshKeys initrdSshPort extraDisks;
+      inherit primaryUser sshKeys initrdSshPort extraDisks;
     };
 
     # Helper function to create a Pi 5 configuration
