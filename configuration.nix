@@ -173,12 +173,12 @@
   users.users.${hostConfig.primaryUser} = {
     isNormalUser = true;
     extraGroups = ["wheel" "networkmanager" "video"];
-    initialHashedPassword = "nix";
+    initialPassword = "nix";
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
 
   users.users.root = {
-    initialHashedPassword = "nix";
+    initialPassword = "nix";
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
 
