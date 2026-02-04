@@ -1,6 +1,6 @@
 # Disk Configuration with LUKS Encryption
 # Partitions: FIRMWARE (1GB), ESP (1GB), log (5GB), system (rest, encrypted)
-{hostConfig, ...}: {
+{ hostConfig, ... }: {
   disko.devices.disk = {
     sd = {
       type = "disk";
@@ -11,27 +11,27 @@
           FIRMWARE = {
             priority = 1;
             type = "0700";
-            attributes = [0];
+            attributes = [ 0 ];
             size = "1024M";
             label = "FIRMWARE";
             content = {
               type = "filesystem";
               format = "vfat";
               mountpoint = "/boot/firmware";
-              mountOptions = ["noatime" "noauto" "x-systemd.automount" "x-systemd.idle-timeout=1min"];
+              mountOptions = [ "noatime" "noauto" "x-systemd.automount" "x-systemd.idle-timeout=1min" ];
             };
           };
 
           ESP = {
             type = "EF00";
-            attributes = [2];
+            attributes = [ 2 ];
             size = "1024M";
             label = "ESP";
             content = {
               type = "filesystem";
               format = "vfat";
               mountpoint = "/boot";
-              mountOptions = ["noatime" "noauto" "x-systemd.automount" "x-systemd.idle-timeout=1min" "umask=0077"];
+              mountOptions = [ "noatime" "noauto" "x-systemd.automount" "x-systemd.idle-timeout=1min" "umask=0077" ];
             };
           };
 
@@ -42,7 +42,7 @@
               type = "filesystem";
               format = "ext4";
               mountpoint = "/var/log";
-              mountOptions = ["noatime" "commit=60"];
+              mountOptions = [ "noatime" "commit=60" ];
             };
           };
 
@@ -57,12 +57,12 @@
                 type = "filesystem";
                 format = "ext4";
                 mountpoint = "/";
-                mountOptions = ["noatime" "commit=60"];
+                mountOptions = [ "noatime" "commit=60" ];
               };
             };
           };
         };
       };
     };
-  } // (hostConfig.extraDisks or {});
+  } // (hostConfig.extraDisks or { });
 }

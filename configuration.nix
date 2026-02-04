@@ -1,11 +1,10 @@
 # Minimal encrypted NixOS configuration for Raspberry Pi 5
-{
-  config,
-  lib,
-  pkgs,
-  nixos-raspberrypi,
-  hostConfig,
-  ...
+{ config
+, lib
+, pkgs
+, nixos-raspberrypi
+, hostConfig
+, ...
 }: {
   # ══════════════════════════════════════════════════════════════════════════
   # HARDWARE
@@ -151,9 +150,9 @@
 
     networks."10-ethernet" = {
       matchConfig.Name = "eth* en*";
-      address = ["10.13.12.249/24"];
-      gateway = ["10.13.12.1"];
-      dns = ["10.13.12.1"];
+      address = [ "10.13.12.249/24" ];
+      gateway = [ "10.13.12.1" ];
+      dns = [ "10.13.12.1" ];
       networkConfig = {
         DHCP = "no";
         MulticastDNS = "yes";
@@ -172,7 +171,7 @@
 
   users.users.${hostConfig.primaryUser} = {
     isNormalUser = true;
-    extraGroups = ["wheel" "networkmanager" "video"];
+    extraGroups = [ "wheel" "networkmanager" "video" ];
     initialPassword = "nix";
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
@@ -198,7 +197,7 @@
   };
 
   nix.settings = {
-    trusted-users = ["nixos" hostConfig.primaryUser "root"];
+    trusted-users = [ "nixos" hostConfig.primaryUser "root" ];
     download-buffer-size = 500000000;
   };
 

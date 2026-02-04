@@ -29,78 +29,83 @@
     };
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    nixos-raspberrypi,
-    disko,
-    nixos-anywhere,
-    ...
-  } @ inputs: let
-    allSystems = nixpkgs.lib.systems.flakeExposed;
-    forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f system);
+  outputs =
+    { self
+    , nixpkgs
+    , nixos-raspberrypi
+    , disko
+    , nixos-anywhere
+    , ...
+    } @ inputs:
+    let
+      allSystems = nixpkgs.lib.systems.flakeExposed;
+      forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f system);
 
-    # Shared settings
-    primaryUser = "tofoo";
-    sshKeys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
-    ];
-    initrdSshPort = 42069;
+      # Shared settings
+      primaryUser = "tofoo";
+      sshKeys = [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
+      ];
+      initrdSshPort = 42069;
 
-    # Per-device disk configurations (empty for both - SD card only)
-    px5n0Disks = {};
-    px5n1Disks = {};
+      # Per-device disk configurations (empty for both - SD card only)
+      px5n0Disks = { };
+      px5n1Disks = { };
 
-    mkHostConfig = extraDisks: {
-      inherit primaryUser sshKeys initrdSshPort extraDisks;
+      mkHostConfig = extraDisks: {
+        inherit primaryUser sshKeys initrdSshPort extraDisks;
+      };
+
+      mkPi5System =
+        { hostname
+        , extraDisks ? { }
+        ,
+        }:
+        nixos-raspberrypi.lib.nixosSystemFull {
+          specialArgs = inputs // { hostConfig = mkHostConfig extraDisks; };
+          modules = [
+            ./configuration.nix
+            ./disko.nix
+            disko.nixosModules.disko
+            {
+              networking.hostName = hostname;
+              time.timeZone = "UTC";
+              system.stateVersion = "24.05";
+            }
+          ];
+        };
+    in
+    {
+      # Development shell with useful tools
+      devShells = forSystems allSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            nativeBuildInputs = with pkgs; [
+              nil
+              nixpkgs-fmt
+              nix-output-monitor
+              nixos-anywhere.packages.${system}.default
+            ];
+          };
+        });
+
+      # Expose nixos-anywhere for deployment
+      packages.x86_64-linux.default = nixos-anywhere.packages.x86_64-linux.default;
+      packages.aarch64-linux.default = nixos-anywhere.packages.aarch64-linux.default;
+
+      nixosConfigurations = {
+        px5n0 = mkPi5System {
+          hostname = "px5n0";
+          extraDisks = px5n0Disks;
+        };
+        px5n1 = mkPi5System {
+          hostname = "px5n1";
+          extraDisks = px5n1Disks;
+        };
+      };
     };
-
-    mkPi5System = {
-      hostname,
-      extraDisks ? {},
-    }:
-      nixos-raspberrypi.lib.nixosSystemFull {
-        specialArgs = inputs // {hostConfig = mkHostConfig extraDisks;};
-        modules = [
-          ./configuration.nix
-          ./disko.nix
-          disko.nixosModules.disko
-          {
-            networking.hostName = hostname;
-            time.timeZone = "UTC";
-            system.stateVersion = "24.05";
-          }
-        ];
-      };
-  in {
-    # Development shell with useful tools
-    devShells = forSystems allSystems (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-    in {
-      default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [
-          nil
-          nixpkgs-fmt
-          nix-output-monitor
-          nixos-anywhere.packages.${system}.default
-        ];
-      };
-    });
-
-    # Expose nixos-anywhere for deployment
-    packages.x86_64-linux.default = nixos-anywhere.packages.x86_64-linux.default;
-    packages.aarch64-linux.default = nixos-anywhere.packages.aarch64-linux.default;
-
-    nixosConfigurations = {
-      px5n0 = mkPi5System {
-        hostname = "px5n0";
-        extraDisks = px5n0Disks;
-      };
-      px5n1 = mkPi5System {
-        hostname = "px5n1";
-        extraDisks = px5n1Disks;
-      };
-    };
-  };
 }
