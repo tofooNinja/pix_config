@@ -1,0 +1,78 @@
+# Repository settings for branch protection
+# This file can be used with GitHub Apps like "Settings" or "Safe Settings"
+# to manage repository configuration as code
+
+repository:
+  # General repository settings
+  name: unknown-repo
+  description: NixOS configuration repository
+  
+  # Enable features
+  has_issues: true
+  has_projects: false
+  has_wiki: false
+  has_downloads: true
+
+# Branch protection rules
+branches:
+  - name: main
+    protection:
+      # Require status checks to pass before merging
+      required_status_checks:
+        # Require branches to be up to date before merging
+        strict: true
+        # List of required status checks (CI job names from workflows)
+        contexts:
+          - "Nix Flake Check"
+          - "Evaluate NixOS Configurations (px5n0)"
+          - "Evaluate NixOS Configurations (px5n1)"
+          - "Check Formatting"
+      
+      # Require pull request reviews before merging
+      required_pull_request_reviews:
+        # Dismiss stale reviews when new commits are pushed
+        dismiss_stale_reviews: false
+        # Require review from code owners
+        require_code_owner_reviews: false
+        # Number of reviewers required
+        required_approving_review_count: 0
+      
+      # Enforce restrictions for administrators
+      enforce_admins: false
+      
+      # Require signed commits
+      required_signatures: false
+      
+      # Restrict who can push to the branch
+      restrictions: null
+
+  - name: master
+    protection:
+      # Require status checks to pass before merging
+      required_status_checks:
+        # Require branches to be up to date before merging
+        strict: true
+        # List of required status checks (CI job names from workflows)
+        contexts:
+          - "Nix Flake Check"
+          - "Evaluate NixOS Configurations (px5n0)"
+          - "Evaluate NixOS Configurations (px5n1)"
+          - "Check Formatting"
+      
+      # Require pull request reviews before merging
+      required_pull_request_reviews:
+        # Dismiss stale reviews when new commits are pushed
+        dismiss_stale_reviews: false
+        # Require review from code owners
+        require_code_owner_reviews: false
+        # Number of reviewers required
+        required_approving_review_count: 0
+      
+      # Enforce restrictions for administrators
+      enforce_admins: false
+      
+      # Require signed commits
+      required_signatures: false
+      
+      # Restrict who can push to the branch
+      restrictions: null
