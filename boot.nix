@@ -1,14 +1,38 @@
 # Boot Configuration with LUKS Unlock via USB Key
 #
-# Features:
+# ══════════════════════════════════════════════════════════════════════════════
+# FEATURES
+# ══════════════════════════════════════════════════════════════════════════════
+#
 #   - USB key-based LUKS unlock with password fallback
 #   - SSH access during initrd for remote unlock
 #   - Early network boot support
+#   - Systemd-based initrd for better logging and service management
 #
-# Configurable via flake.nix:
-#   - hostConfig.usbKeyUuid
-#   - hostConfig.initrdSshKeys
-#   - hostConfig.initrdSshPort
+# ══════════════════════════════════════════════════════════════════════════════
+# INITRD LOGGING
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# With systemd in initrd (boot.initrd.systemd.enable = true), journald runs
+# during early boot and captures all initrd activity. Combined with the
+# dedicated /var/log partition (neededForBoot = true in disko.nix), this means:
+#
+#   1. /var/log is mounted BEFORE LUKS unlock attempt
+#   2. journald can write directly to /var/log/journal
+#   3. If LUKS unlock fails, logs are still preserved on the unencrypted log partition
+#   4. SSH unlock attempts, network issues, and hardware detection are all logged
+#
+# To view initrd-specific logs after boot:
+#   journalctl -b _SYSTEMD_UNIT=initrd.target
+#   journalctl -b _TRANSPORT=kernel  # kernel messages only
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIGURABLE OPTIONS (via flake.nix)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#   - hostConfig.usbKeyUuid    - UUID of USB stick with LUKS keyfile
+#   - hostConfig.initrdSshKeys - SSH public keys for remote unlock
+#   - hostConfig.initrdSshPort - SSH port during initrd (default: 22)
 {
   config,
   lib,
