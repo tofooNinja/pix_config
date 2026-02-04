@@ -207,8 +207,28 @@
   # ══════════════════════════════════════════════════════════════════════════
 
   environment.systemPackages = with pkgs; [
+    # File management
+    tree
+
+    # Editors
     vim
+    neovim
+
+    # Version control
     git
-    htop
+    tig
+
+    # Documentation
+    tealdeer
+
+    # System
+    bottom
+    duf
+    lshw
+    pciutils
+    usbutils
+
+    # Serial/terminal tools
+    screen
   ];
 }
