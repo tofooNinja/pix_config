@@ -4,11 +4,10 @@
 #   - hostConfig.primaryUser
 #   - hostConfig.sshKeys
 #   - hostConfig.initrdSshKeys
-{
-  config,
-  lib,
-  hostConfig,
-  ...
+{ config
+, lib
+, hostConfig
+, ...
 }: {
   # Primary user account
   users.users.${hostConfig.primaryUser} = {
@@ -48,7 +47,7 @@
 
   # Nix trusted users for remote operations
   nix.settings = {
-    trusted-users = ["nixos" hostConfig.primaryUser "root"];
+    trusted-users = [ "nixos" hostConfig.primaryUser "root" ];
     download-buffer-size = 500000000;
   };
 }

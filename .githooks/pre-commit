@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Pre-commit hook to format Nix files with nixpkgs-fmt
+
+set -euo pipefail
+
+# Get the list of staged .nix files
+STAGED_NIX_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.nix$' || true)
+
+if [ -z "$STAGED_NIX_FILES" ]; then
+    exit 0
+fi
+
+echo "Formatting staged Nix files..."
+
+# Check if nixpkgs-fmt is available
+if ! command -v nixpkgs-fmt &> /dev/null; then
+    # Try to run via nix develop
+    if command -v nix &> /dev/null; then
+        echo "$STAGED_NIX_FILES" | xargs nix develop --command nixpkgs-fmt
+    else
+        echo "Warning: nixpkgs-fmt not found. Please run 'nix develop' or install nixpkgs-fmt."
+        exit 0
+    fi
+else
+    echo "$STAGED_NIX_FILES" | xargs nixpkgs-fmt
+fi
+
+# Re-add the formatted files to staging
+echo "$STAGED_NIX_FILES" | xargs git add
+
+echo "Nix files formatted and re-staged."

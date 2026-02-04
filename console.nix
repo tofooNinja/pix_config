@@ -2,10 +2,9 @@
 #
 # Configures terminal fonts and colors for better readability.
 # Based on nixos-images installer module.
-{
-  lib,
-  pkgs,
-  ...
+{ lib
+, pkgs
+, ...
 }: {
   console = {
     earlySetup = true;

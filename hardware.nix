@@ -2,12 +2,11 @@
 #
 # This module configures hardware-specific settings for the Raspberry Pi 5,
 # including the bootloader, display drivers, config.txt options, and GPIO UART debugging.
-{
-  config,
-  pkgs,
-  lib,
-  nixos-raspberrypi,
-  ...
+{ config
+, pkgs
+, lib
+, nixos-raspberrypi
+, ...
 }: {
   imports = with nixos-raspberrypi.nixosModules; [
     raspberry-pi-5.base
@@ -117,7 +116,7 @@
       dt-overlays = {
         vc4-kms-v3d = {
           enable = lib.mkDefault true;
-          params = {};
+          params = { };
         };
       };
     };
@@ -132,11 +131,13 @@
   ];
 
   # System identification tags
-  system.nixos.tags = let
-    cfg = config.boot.loader.raspberry-pi;
-  in [
-    "raspberry-pi-${cfg.variant}"
-    cfg.bootloader
-    config.boot.kernelPackages.kernel.version
-  ];
+  system.nixos.tags =
+    let
+      cfg = config.boot.loader.raspberry-pi;
+    in
+    [
+      "raspberry-pi-${cfg.variant}"
+      cfg.bootloader
+      config.boot.kernelPackages.kernel.version
+    ];
 }
