@@ -20,19 +20,40 @@
   # Pi firmware config.txt settings
   hardware.raspberry-pi.config.all = {
     options = {
-      camera_auto_detect.enable = lib.mkDefault true;
-      display_auto_detect.enable = lib.mkDefault true;
+      camera_auto_detect = {
+        enable = lib.mkDefault true;
+        value = lib.mkDefault true;
+      };
+      display_auto_detect = {
+        enable = lib.mkDefault true;
+        value = lib.mkDefault true;
+      };
       max_framebuffers = {
         enable = lib.mkDefault true;
         value = lib.mkDefault 2;
       };
-      disable_fw_kms_setup.enable = lib.mkDefault true;
-      disable_overscan.enable = lib.mkDefault true;
-      arm_boost.enable = lib.mkDefault true;
-      enable_uart.enable = true; # Serial console
+      disable_fw_kms_setup = {
+        enable = lib.mkDefault true;
+        value = lib.mkDefault true;
+      };
+      disable_overscan = {
+        enable = lib.mkDefault true;
+        value = lib.mkDefault true;
+      };
+      arm_boost = {
+        enable = lib.mkDefault true;
+        value = lib.mkDefault true;
+      };
+      enable_uart = {
+        enable = true;
+        value = true;
+      };
     };
     base-dt-params = {
-      pciex1.enable = true;
+      pciex1 = {
+        enable = true;
+        value = "on";
+      };
       pciex1_gen = {
         enable = true;
         value = "3";
