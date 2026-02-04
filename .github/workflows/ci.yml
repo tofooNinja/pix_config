@@ -3,11 +3,9 @@ name: CI
 on:
   push:
     branches:
-      - '**'  # Trigger on all branches for auto-formatting
-  pull_request:
-    branches:
       - main
       - master
+  pull_request:
 
 jobs:
   check:
