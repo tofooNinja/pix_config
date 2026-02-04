@@ -77,14 +77,9 @@ Gateway: `10.13.12.1`
 
 | File | Purpose |
 |------|---------|
-| `flake.nix` | Main configuration entry point |
-| `boot.nix` | Boot and LUKS configuration |
-| `networking.nix` | Static IP configuration |
+| `flake.nix` | Main entry point with shared settings |
+| `configuration.nix` | Complete system configuration |
 | `disko.nix` | Disk partitioning and encryption |
-| `hardware.nix` | Pi 5 hardware settings |
-| `users.nix` | User accounts and SSH keys |
-| `packages.nix` | Installed packages |
-| `console.nix` | Console appearance |
 
 ## Customization
 
@@ -100,14 +95,16 @@ sshKeys = [
 
 ### Change Static IP
 
-1. Edit `boot.nix` - update kernel params:
+Edit `configuration.nix` and update both:
+
+1. Boot kernel params (line ~69):
    ```nix
    kernelParams = [
      "ip=YOUR.IP.HERE::GATEWAY.IP:NETMASK::eth0:off"
    ];
    ```
 
-2. Edit `networking.nix` - update the address:
+2. Network configuration (line ~142):
    ```nix
    address = ["YOUR.IP.HERE/24"];
    gateway = ["GATEWAY.IP"];
