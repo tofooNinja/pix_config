@@ -81,6 +81,18 @@ Gateway: `10.13.12.1`
 | `configuration.nix` | Complete system configuration |
 | `disko.nix` | Disk partitioning and encryption |
 
+## CI/CD and Branch Protection
+
+This repository includes GitHub Actions CI that runs on all pull requests and pushes to main/master branches. The CI checks:
+
+- **Nix Flake Check**: Validates the flake structure
+- **NixOS Configuration Evaluation**: Ensures configurations build correctly
+- **Format Check**: Verifies code formatting with nixpkgs-fmt
+
+### Branch Protection
+
+To ensure code quality, branch protection is configured to require all CI checks to pass before merging. See `.github/settings.yml` for the configuration and `.github/BRANCH_PROTECTION.md` for setup instructions.
+
 ## Customization
 
 ### Change SSH Keys
