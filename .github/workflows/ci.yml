@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  check:
+    name: Nix Flake Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Check flake
+        run: nix flake check --no-build
+
+  eval:
+    name: Evaluate NixOS Configurations
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        configuration:
+          - px5n0
+          - px5n1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Evaluate ${{ matrix.configuration }}
+        run: |
+          nix eval .#nixosConfigurations.${{ matrix.configuration }}.config.system.build.toplevel.drvPath
+
+  format:
+    name: Check Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Check formatting with nixpkgs-fmt
+        run: |
+          nix develop --command nixpkgs-fmt --check .

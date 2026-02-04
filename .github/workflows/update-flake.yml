@@ -1,0 +1,45 @@
+name: Update Flake Inputs
+
+on:
+  schedule:
+    # Run weekly on Mondays at 00:00 UTC
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  update:
+    name: Update flake.lock
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Update flake.lock
+        run: nix flake update
+
+      - name: Evaluate configurations after update
+        run: |
+          nix eval .#nixosConfigurations.px5n0.config.system.build.toplevel.drvPath
+          nix eval .#nixosConfigurations.px5n1.config.system.build.toplevel.drvPath
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update flake.lock"
+          title: "chore: Update flake.lock"
+          body: |
+            Automated flake.lock update.
+
+            This PR was automatically created by the update-flake workflow.
+
+            Please review the changes and ensure configurations still evaluate correctly.
+          branch: automation/update-flake-lock
+          delete-branch: true
