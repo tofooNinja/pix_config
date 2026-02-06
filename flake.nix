@@ -41,97 +41,22 @@
       allSystems = nixpkgs.lib.systems.flakeExposed;
       forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f system);
 
-      #
-      # ══════════════════════════════════════════════════════════════════════════
-      # SHARED SETTINGS - Common to all devices
-      # ══════════════════════════════════════════════════════════════════════════
-      #
-
-      # Primary user account name
+      # Shared settings
       primaryUser = "tofoo";
-
-      # USB key UUID for automatic LUKS unlock (find with: lsblk -o NAME,UUID)
-      usbKeyUuid = "8480-1149";
-
-      # SSH public keys for authorized access
       sshKeys = [
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
       ];
-
-      # SSH keys specifically for initrd (remote LUKS unlock)
-      initrdSshKeys = [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@space"
-      ];
-
-      # Initrd SSH port for remote LUKS unlock
       initrdSshPort = 42069;
 
-      #
-      # ══════════════════════════════════════════════════════════════════════════
-      # PER-DEVICE DISK CONFIGURATIONS
-      # ══════════════════════════════════════════════════════════════════════════
-      # Define additional disks for each device here.
-      # The SD card configuration is shared and defined in disko.nix.
-      #
-      # Example NVMe data disk:
-      #   nvme0 = {
-      #     type = "disk";
-      #     device = "/dev/nvme0n1";
-      #     content = {
-      #       type = "gpt";
-      #       partitions = {
-      #         data = {
-      #           size = "100%";
-      #           content = {
-      #             type = "filesystem";
-      #             format = "ext4";
-      #             mountpoint = "/data";
-      #             mountOptions = ["noatime"];
-      #           };
-      #         };
-      #       };
-      #     };
-      #   };
-      #
-
-      # px5n0: No additional disks (SD card only)
+      # Per-device disk configurations (empty for both - SD card only)
       px5n0Disks = { };
-
-      # px5n1: No additional disks (SD card only)
-      # Uncomment and modify to add an NVMe drive:
-      # px5n1Disks = {
-      #   nvme0 = {
-      #     type = "disk";
-      #     device = "/dev/nvme0n1";
-      #     content = {
-      #       type = "gpt";
-      #       partitions = {
-      #         data = {
-      #           size = "100%";
-      #           content = {
-      #             type = "filesystem";
-      #             format = "ext4";
-      #             mountpoint = "/data";
-      #             mountOptions = ["noatime"];
-      #           };
-      #         };
-      #       };
-      #     };
-      #   };
-      # };
       px5n1Disks = { };
 
-      #
-      # ══════════════════════════════════════════════════════════════════════════
-      #
-
-      # Helper to create hostConfig with device-specific settings
       mkHostConfig = extraDisks: {
-        inherit primaryUser usbKeyUuid sshKeys initrdSshKeys initrdSshPort extraDisks;
+        inherit primaryUser sshKeys initrdSshPort extraDisks;
       };
 
-      # Helper function to create a Pi 5 configuration
       mkPi5System =
         { hostname
         , extraDisks ? { }
@@ -140,19 +65,9 @@
         nixos-raspberrypi.lib.nixosSystemFull {
           specialArgs = inputs // { hostConfig = mkHostConfig extraDisks; };
           modules = [
-            # Core configuration modules
-            ./hardware.nix
+            ./configuration.nix
             ./disko.nix
-            ./boot.nix
-            ./networking.nix
-            ./users.nix
-            ./packages.nix
-            ./console.nix
-
-            # Disko module for disk management
             disko.nixosModules.disko
-
-            # System identity and state
             {
               networking.hostName = hostname;
               time.timeZone = "UTC";
@@ -175,14 +90,6 @@
               nix-output-monitor
               nixos-anywhere.packages.${system}.default
             ];
-
-            shellHook = ''
-              # Configure git to use the project's hooks
-              if [ -d .git ]; then
-                git config core.hooksPath .githooks
-                echo "Git hooks configured to use .githooks/"
-              fi
-            '';
           };
         });
 
