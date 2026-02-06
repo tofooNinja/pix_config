@@ -35,14 +35,11 @@
             };
           };
 
-          log = {
-            type = "8300";
-            size = "5G";
+          encrypted_swap = {
+            size = "8G";
             content = {
-              type = "filesystem";
-              format = "ext4";
-              mountpoint = "/var/log";
-              mountOptions = [ "noatime" "commit=60" ];
+              type = "swap";
+              randomEncryption = true;
             };
           };
 
