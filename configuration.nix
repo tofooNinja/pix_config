@@ -70,7 +70,7 @@
     loader.raspberry-pi = {
       enable = true;
       bootloader = "kernel"; # or "uboot";?
-      configurationLimit = 1;
+      configurationLimit = 3;
       variant = "5";
     };
 
@@ -113,6 +113,8 @@
             ./keys/initrd_host_ed25519
           ];
           authorizedKeys = config.users.users.root.openssh.authorizedKeys.keys;
+          # leave uncommented for debug purposes
+          # shell = "/usr/bin/systemd-tty-ask-password-agent";
         };
       };
 
@@ -127,8 +129,6 @@
       };
     };
   };
-
-  fileSystems."/var/log".neededForBoot = true;
 
   # ══════════════════════════════════════════════════════════════════════════
   # NETWORKING
