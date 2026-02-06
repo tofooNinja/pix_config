@@ -49,6 +49,8 @@
       };
     };
     base-dt-params = {
+      # forward uart on pi5 to GPIO 14/15 instead of uart-port
+      uart0_console.enable=true;
       pciex1 = {
         enable = true;
         value = "on";
