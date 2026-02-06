@@ -1,10 +1,11 @@
 # Minimal encrypted NixOS configuration for Raspberry Pi 5
-{ config
-, lib
-, pkgs
-, nixos-raspberrypi
-, hostConfig
-, ...
+{
+  config,
+  lib,
+  pkgs,
+  nixos-raspberrypi,
+  hostConfig,
+  ...
 }: {
   # ══════════════════════════════════════════════════════════════════════════
   # HARDWARE
@@ -21,7 +22,7 @@
   hardware.raspberry-pi.config.all = {
     options = {
       # https://www.raspberrypi.com/documentation/computers/config_txt.html#uart_2ndstage
-      # enable debug logging to the UART, also automatically enables 
+      # enable debug logging to the UART, also automatically enables
       # UART logging in `start.elf`
       uart_2ndstage = {
         enable = true;
@@ -30,7 +31,7 @@
     };
     base-dt-params = {
       # forward uart on pi5 to GPIO 14/15 instead of uart-port
-      uart0_console.enable=true;
+      uart0_console.enable = true;
       # https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#enable-pcie
       pciex1 = {
         enable = true;
@@ -51,17 +52,17 @@
 
   # Fix for no screen out during password prompt
   # https://github.com/nvmd/nixos-raspberrypi/issues/49#issuecomment-3367765772
-  boot.blacklistedKernelModules = [ "vc4" ];
+  boot.blacklistedKernelModules = ["vc4"];
   systemd.services.modprobe-vc4 = {
     serviceConfig = {
       Type = "oneshot";
       User = "root";
     };
-    before = [ "multi-user.target" ];
-    wantedBy = [ "multi-user.target" ];
+    before = ["multi-user.target"];
+    wantedBy = ["multi-user.target"];
     script = "/run/current-system/sw/bin/modprobe vc4";
   };
-  
+
   boot = {
     tmp.useTmpfs = true;
     #kernelPackages = pkgs.linuxPackages_latest;
@@ -74,11 +75,13 @@
     };
 
     # see also nixos-raspberrypi/module/raspberrypi.nix
+    # Static IP during boot for SSH unlock: 10.13.12.249
     kernelParams = [
       "ip=dhcp"
+      #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
     ];
 
-    supportedFilesystems = [ "ext4", "vfat"];
+    supportedFilesystems = ["ext4" "vfat"];
 
     initrd = {
       # Kernel modules needed for mounting USB VFAT devices in initrd stage
@@ -88,13 +91,17 @@
       # Debug tips: kernel options boot.debug1* drops you in a shell (see stage-1.sh for various options),
       # boot.trace shows all typed commands.
       kernelModules = [
-        "uas" "usbcore" "usb_storage"
-        "vfat" "nls_cp437" "nls_iso8859_1"
-        "ext4"  # in case ext4 is not configured as builtin
+        "uas"
+        "usbcore"
+        "usb_storage"
+        "vfat"
+        "nls_cp437"
+        "nls_iso8859_1"
+        "ext4" # in case ext4 is not configured as builtin
       ];
       #kernelModules = [ "rp1" "bcm2712-rpi-5-b" ];
 
-      availableKernelModules = [ "hid" "hid-generic" "evdev" ];
+      availableKernelModules = ["hid" "hid-generic" "evdev"];
 
       network = {
         enable = true;
@@ -154,7 +161,7 @@
       "99-wireless-client-dhcp".networkConfig.MulticastDNS = "yes";
     };
     #networks."10-ethernet" = {
-    #  matchConfig.Name = "eth* en*";
+    #  matchConfig.Name = "end* eth* en*";
     #  address = [ "10.13.12.249/24" ];
     #  gateway = [ "10.13.12.1" ];
     #  dns = [ "10.13.12.1" ];
@@ -164,7 +171,6 @@
     #  };
     #};
   };
-
 
   # This comment was lifted from `srvos`
   # Do not take down the network for too long when upgrading,
@@ -182,7 +188,7 @@
 
   users.users.${hostConfig.primaryUser} = {
     isNormalUser = true;
-    extraGroups = [ "wheel" "networkmanager" "video" ];
+    extraGroups = ["wheel" "networkmanager" "video"];
     initialPassword = "nix";
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
@@ -208,8 +214,8 @@
   };
 
   nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ];
-    trusted-users = [ "nixos" hostConfig.primaryUser "root" ];
+    experimental-features = ["nix-command" "flakes"];
+    trusted-users = ["nixos" hostConfig.primaryUser "root"];
     download-buffer-size = 500000000;
   };
 
