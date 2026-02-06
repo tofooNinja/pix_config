@@ -1,11 +1,10 @@
 # Minimal encrypted NixOS configuration for Raspberry Pi 5
-{
-  config,
-  lib,
-  pkgs,
-  nixos-raspberrypi,
-  hostConfig,
-  ...
+{ config
+, lib
+, pkgs
+, nixos-raspberrypi
+, hostConfig
+, ...
 }: {
   # ══════════════════════════════════════════════════════════════════════════
   # HARDWARE
@@ -52,14 +51,14 @@
 
   # Fix for no screen out during password prompt
   # https://github.com/nvmd/nixos-raspberrypi/issues/49#issuecomment-3367765772
-  boot.blacklistedKernelModules = ["vc4"];
+  boot.blacklistedKernelModules = [ "vc4" ];
   systemd.services.modprobe-vc4 = {
     serviceConfig = {
       Type = "oneshot";
       User = "root";
     };
-    before = ["multi-user.target"];
-    wantedBy = ["multi-user.target"];
+    before = [ "multi-user.target" ];
+    wantedBy = [ "multi-user.target" ];
     script = "/run/current-system/sw/bin/modprobe vc4";
   };
 
@@ -81,7 +80,7 @@
       #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
     ];
 
-    supportedFilesystems = ["ext4" "vfat"];
+    supportedFilesystems = [ "ext4" "vfat" ];
 
     initrd = {
       # Kernel modules needed for mounting USB VFAT devices in initrd stage
@@ -101,7 +100,7 @@
       ];
       #kernelModules = [ "rp1" "bcm2712-rpi-5-b" ];
 
-      availableKernelModules = ["hid" "hid-generic" "evdev"];
+      availableKernelModules = [ "hid" "hid-generic" "evdev" ];
 
       network = {
         enable = true;
@@ -188,7 +187,7 @@
 
   users.users.${hostConfig.primaryUser} = {
     isNormalUser = true;
-    extraGroups = ["wheel" "networkmanager" "video"];
+    extraGroups = [ "wheel" "networkmanager" "video" ];
     initialPassword = "nix";
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
@@ -214,8 +213,8 @@
   };
 
   nix.settings = {
-    experimental-features = ["nix-command" "flakes"];
-    trusted-users = ["nixos" hostConfig.primaryUser "root"];
+    experimental-features = [ "nix-command" "flakes" ];
+    trusted-users = [ "nixos" hostConfig.primaryUser "root" ];
     download-buffer-size = 500000000;
   };
 
