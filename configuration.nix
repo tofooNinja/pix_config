@@ -97,10 +97,12 @@
         "nls_cp437"
         "nls_iso8859_1"
         "ext4" # in case ext4 is not configured as builtin
+        "hid_generic" # needed for YubiKey FIDO2 during early boot
+        "usbhid" # USB HID transport for YubiKey
       ];
       #kernelModules = [ "rp1" "bcm2712-rpi-5-b" ];
 
-      availableKernelModules = [ "hid" "hid-generic" "evdev" ];
+      availableKernelModules = [ "hid" "evdev" ];
 
       network = {
         enable = true;
@@ -125,6 +127,10 @@
       luks.devices.crypted = {
         device = "/dev/disk/by-partlabel/disk-sd-system";
         allowDiscards = true;
+        # YubiKey FIDO2 unlock: systemd-cryptsetup will look for a FIDO2 token.
+        # Passphrase fallback is automatic if no token is present.
+        # Enroll with: sudo systemd-cryptenroll --fido2-device=auto /dev/disk/by-partlabel/disk-sd-system
+        crypttabExtraOpts = [ "fido2-device=auto" ];
       };
     };
   };
@@ -247,6 +253,10 @@
     # Serial/terminal tools
     screen
     minicom
+
+    # Security / YubiKey
+    libfido2 # FIDO2 library and fido2-token CLI
+    yubikey-manager # ykman CLI for YubiKey management
 
     raspberrypi-eeprom
   ];
