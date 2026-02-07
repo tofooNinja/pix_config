@@ -51,6 +51,8 @@
                 name = "crypted";
                 passwordFile = "/tmp/disk.key";
                 settings.allowDiscards = true;
+                # LUKS2 is required for FIDO2 enrollment via systemd-cryptenroll
+                extraFormatArgs = [ "--type" "luks2" ];
                 content = {
                   type = "filesystem";
                   format = "ext4";
