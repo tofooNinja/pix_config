@@ -1,12 +1,13 @@
 # Raspberry Pi 5 -- Secure Boot and LUKS Unlock Guide
 
-This guide covers four layers of boot security for the Raspberry Pi 5 running
+This guide covers five layers of boot security for the Raspberry Pi 5 running
 NixOS with LUKS-encrypted root:
 
 1. **TPM2 for LUKS auto-unlock** (recommended, primary)
 2. **YubiKey FIDO2 for LUKS unlock** (optional, YubiKey plugged into Pi)
 3. **YubiKey remote unlock via challenge-response** (optional, YubiKey stays on local machine)
-4. **RPi5 hardware secure boot** (advanced, optional, irreversible)
+4. **Tang/Clevis network-bound unlock** (optional, unlock via LAN server)
+5. **RPi5 hardware secure boot** (advanced, optional, irreversible)
 
 ---
 
@@ -45,6 +46,20 @@ NixOS with LUKS-encrypted root:
   - [Step 4: Test the Remote Unlock](#step-4-test-the-remote-unlock)
   - [Daily Usage](#daily-usage)
   - [Managing the Enrollment](#managing-the-enrollment)
+- [Part 2.6: Tang/Clevis Network-Bound LUKS Unlock](#part-26-tangclevis-network-bound-luks-unlock)
+  - [How It Works](#how-it-works-3)
+  - [Roles](#roles)
+  - [Prerequisites](#prerequisites-3)
+  - [Step 1: Deploy the Tang Server](#step-1-deploy-the-tang-server)
+  - [Step 2: Verify the Tang Server](#step-2-verify-the-tang-server)
+  - [Step 3: Create the Clevis JWE Secret](#step-3-create-the-clevis-jwe-secret)
+  - [Step 4: Enable Clevis in the Flake](#step-4-enable-clevis-in-the-flake)
+  - [Step 5: Deploy and Test](#step-5-deploy-and-test)
+  - [Boot Order and Network Requirements](#boot-order-and-network-requirements)
+  - [Fallback Behavior](#fallback-behavior)
+  - [Managing the Tang/Clevis Enrollment](#managing-the-tangclevis-enrollment)
+  - [Security Considerations](#security-considerations)
+  - [Adding More Pis](#adding-more-pis)
 - [Part 3: RPi5 Hardware Secure Boot (Advanced)](#part-3-rpi5-hardware-secure-boot-advanced)
   - [Overview](#overview)
   - [Warnings](#warnings)
@@ -60,14 +75,15 @@ NixOS with LUKS-encrypted root:
 
 Understanding what each layer protects against:
 
-| Threat | LUKS Encryption | TPM2 Auto-Unlock | YubiKey FIDO2 | RPi5 Secure Boot |
-|--------|:-:|:-:|:-:|:-:|
-| Stolen SD card / disk read | Yes | Yes | Yes | No |
-| Brute-force passphrase | Partial | Yes (no passphrase needed) | Yes (hardware-bound) | No |
-| Tampered kernel/initramfs | No | Yes (PCR-bound) | No | Yes |
-| Evil maid (boot modification) | No | Yes (PCR-bound) | No | Yes |
-| Physical device theft (powered off) | Yes | Yes | Yes | Yes |
-| Unattended reboot (headless) | No (needs passphrase) | Yes (automatic) | No (needs touch) | N/A |
+| Threat | LUKS Encryption | TPM2 Auto-Unlock | YubiKey FIDO2 | Tang/Clevis | RPi5 Secure Boot |
+|--------|:-:|:-:|:-:|:-:|:-:|
+| Stolen SD card / disk read | Yes | Yes | Yes | Yes | No |
+| Brute-force passphrase | Partial | Yes (no passphrase needed) | Yes (hardware-bound) | Yes (no passphrase needed) | No |
+| Tampered kernel/initramfs | No | Yes (PCR-bound) | No | No | Yes |
+| Evil maid (boot modification) | No | Yes (PCR-bound) | No | No | Yes |
+| Physical device theft (powered off) | Yes | Yes | Yes | Yes (needs LAN) | Yes |
+| Device stolen and moved to other network | No | No | No | Yes (wrong network) | No |
+| Unattended reboot (headless) | No (needs passphrase) | Yes (automatic) | No (needs touch) | Yes (automatic, if Tang reachable) | N/A |
 
 **Recommendation**: TPM2 is the best choice for headless Raspberry Pi servers --
 it provides automatic LUKS unlock on trusted boots and refuses to unseal the key
@@ -720,6 +736,315 @@ the same derived key, so both YubiKeys work with the same LUKS key slot.
 
 Alternatively, enroll each YubiKey separately (different salts, different LUKS
 key slots) for independent revocation.
+
+---
+
+## Part 2.6: Tang/Clevis Network-Bound LUKS Unlock
+
+This section describes how to automatically unlock a Pi's LUKS volume using
+**network-bound disk encryption (NBDE)**. A **Tang server** on one Pi (e.g.
+px5n0) provides cryptographic key escrow, and a **Clevis client** on another Pi
+(e.g. px5n1) contacts the Tang server during boot to unlock its LUKS volume --
+no passphrase, no hardware token, no TPM required on the client.
+
+The Pi only unlocks when it can reach the Tang server on the local network. If
+someone steals the SD card and boots it elsewhere, Tang is unreachable and the
+volume stays locked.
+
+### How It Works
+
+```
+┌──────────────────────────────────┐
+│   Tang Server (px5n0)            │
+│                                  │
+│   services.tang on port 7654     │
+│   Holds signing/exchange keys    │
+│   in /var/lib/tang               │
+│                                  │
+│   Responds to Clevis requests    │
+│   using McCallum-Relyea protocol │
+│   (Diffie-Hellman key exchange)  │
+└──────────────┬───────────────────┘
+               │
+          LAN / private network
+               │
+┌──────────────┴───────────────────┐
+│   Clevis Client (px5n1)          │
+│                                  │
+│   Boot sequence:                 │
+│   1. kernel + initramfs          │
+│   2. Network comes up (DHCP)     │
+│   3. Clevis reads JWE secret     │
+│   4. Contacts Tang server        │
+│   5. Tang returns key material   │
+│   6. Clevis derives LUKS key     │
+│   7. LUKS volume unlocked        │
+│   8. Root filesystem mounted     │
+│                                  │
+│   Fallback: passphrase / TPM /   │
+│   YubiKey if Tang unreachable    │
+└──────────────────────────────────┘
+```
+
+**How the McCallum-Relyea protocol works (simplified):**
+
+1. During enrollment, Clevis generates a random key and encrypts the LUKS
+   passphrase with it. The random key is then split: one half is stored in the
+   JWE (on the client), the other half is derived from a Diffie-Hellman
+   exchange with the Tang server's public key.
+2. At boot, Clevis sends its half of the exchange to Tang. Tang computes the
+   shared secret and returns it. Clevis combines both halves to reconstruct the
+   key and decrypt the LUKS passphrase.
+3. Tang never sees the LUKS passphrase -- it only performs a DH operation.
+
+### Roles
+
+| Role | Host | What it does |
+|------|------|-------------|
+| **Tang server** | px5n0 (has TPM) | Runs `services.tang`, responds to Clevis key requests |
+| **Clevis client** | px5n1 (or any additional Pi) | Contacts Tang at boot to unlock LUKS |
+
+These roles are configured in `flake.nix` via `tangServer = true` (server) and
+`tangUnlockUrl = "http://..."` (client). Any number of Pis can be Clevis
+clients pointing at the same Tang server.
+
+### Prerequisites
+
+- **Tang server Pi** (e.g. px5n0) must be deployed and reachable on the network
+- **Clevis client Pi** (e.g. px5n1) must have LUKS2 encryption (already configured)
+- Both Pis must be on the **same network** (or have routed connectivity)
+- The Tang server should be assigned a **known IP or hostname** reachable from
+  the client's initrd (static IP recommended; mDNS may not resolve in initrd)
+
+### Step 1: Deploy the Tang Server
+
+The Tang server is already configured in `configuration.nix` -- it activates
+when `tangServer = true` is set in `flake.nix`.
+
+For px5n0, this is already set:
+
+```nix
+# In flake.nix
+px5n0 = mkPi5System {
+  hostname = "px5n0";
+  extraDisks = px5n0Disks;
+  tangServer = true;
+};
+```
+
+Build and deploy:
+
+```bash
+# On px5n0, or via nixos-anywhere / deploy-rs
+sudo nixos-rebuild switch --flake .#px5n0
+```
+
+Tang keys are auto-generated on the first client request and stored in
+`/var/lib/tang`. No manual key generation is needed.
+
+### Step 2: Verify the Tang Server
+
+After deploying, verify Tang is running and accessible:
+
+```bash
+# On the Tang server (px5n0)
+systemctl status tangd.socket
+# Expected: active (listening) on port 7654
+
+# From the Clevis client Pi (or any machine on the same network)
+curl -sfS http://<tang-server-ip>:7654/adv
+# Expected: JSON output with the server's advertisement (public keys)
+```
+
+If `curl` returns JSON with `keys`, Tang is working. Save the server IP -- you
+will need it for enrollment.
+
+### Step 3: Create the Clevis JWE Secret
+
+On the **Clevis client Pi** (px5n1), or any machine that can reach Tang and has
+`clevis` installed (e.g. from the dev shell):
+
+```bash
+# Enter the dev shell (on your workstation)
+cd /path/to/pix5-minimal-encrypted
+nix develop
+
+# Create the JWE secret file
+# Replace <tang-ip> with the Tang server's IP address
+echo -n "YOUR-LUKS-PASSPHRASE" | clevis encrypt tang '{"url":"http://<tang-ip>:7654"}' > keys/clevis-tang.jwe
+```
+
+You will be shown the Tang server's key thumbprint and asked to confirm it
+(similar to SSH host key verification). Verify it matches what Tang advertises.
+
+> **Important:** The LUKS passphrase you enter here is the one you set during
+> initial disk encryption. Clevis encrypts it into the JWE file using Tang's
+> public key. The cleartext passphrase is not stored anywhere.
+
+> **Security note:** The JWE file (`keys/clevis-tang.jwe`) will be copied to the
+> Nix store during build, making it world-readable on the system. See
+> [Security Considerations](#security-considerations) for details and mitigations.
+
+### Step 4: Enable Clevis in the Flake
+
+Uncomment the `tangUnlockUrl` line for px5n1 in `flake.nix`:
+
+```nix
+px5n1 = mkPi5System {
+  hostname = "px5n1";
+  extraDisks = px5n1Disks;
+  tangUnlockUrl = "http://<tang-ip>:7654";  # use the Tang server's IP
+};
+```
+
+> **Tip:** Use a static IP rather than a hostname. mDNS (`.local`) may not
+> resolve reliably in the initrd before the root filesystem is mounted. If your
+> Tang server has a static IP (e.g. `10.13.12.249`), use that.
+
+### Step 5: Deploy and Test
+
+Build and deploy the Clevis client:
+
+```bash
+sudo nixos-rebuild switch --flake .#px5n1
+```
+
+Then reboot and verify:
+
+```bash
+sudo reboot
+```
+
+If Tang is reachable, the LUKS volume unlocks automatically (no passphrase
+prompt). Check the journal after boot:
+
+```bash
+journalctl -b -u clevis-luks-unlock.service
+# or
+journalctl -b | grep -i clevis
+```
+
+If Tang is **not** reachable (server down, wrong network), the system falls back
+to the passphrase prompt (and/or TPM/YubiKey if configured).
+
+### Boot Order and Network Requirements
+
+- The Clevis client needs **network access** in the initrd to contact Tang.
+  The `rd.neednet=1` kernel parameter is automatically added when
+  `tangUnlockUrl` is set, ensuring the initrd waits for network before
+  attempting LUKS unlock.
+- The Tang server (px5n0) should be **powered on and booted** before the
+  Clevis client (px5n1) reaches its initrd. If Tang is not yet ready, the
+  client will retry briefly and then fall back to passphrase.
+- Both machines use `ip=dhcp` in kernel parameters. For more reliable initrd
+  networking, consider using a static IP for the Tang server.
+- If you use a **UPS or always-on power**, the Tang server should recover and
+  be available before clients need it after a power outage.
+
+### Fallback Behavior
+
+The Clevis/Tang unlock method does **not** replace existing unlock methods. All
+existing methods remain available as fallbacks:
+
+1. **Clevis/Tang** -- automatic, if Tang server is reachable on the network
+2. **TPM2** -- automatic, if TPM is present and PCRs match
+3. **FIDO2 (YubiKey)** -- if YubiKey is plugged in
+4. **Passphrase** -- always available via console or SSH (port 42069)
+
+The system tries each method in order. The first one to succeed unlocks the
+volume.
+
+### Managing the Tang/Clevis Enrollment
+
+**Verify the JWE is valid:**
+
+```bash
+# On a machine with clevis installed and Tang reachable
+cat keys/clevis-tang.jwe | clevis decrypt
+# Should output the LUKS passphrase (confirms Tang can decrypt it)
+```
+
+**Re-create the JWE** (e.g. after changing the LUKS passphrase):
+
+```bash
+echo -n "NEW-LUKS-PASSPHRASE" | clevis encrypt tang '{"url":"http://<tang-ip>:7654"}' > keys/clevis-tang.jwe
+# Rebuild the Clevis client
+sudo nixos-rebuild switch --flake .#px5n1
+```
+
+**Rotate Tang server keys:**
+
+```bash
+# On the Tang server
+# Move old keys to a temporary directory for a grace period
+sudo tangd-keygen /var/lib/tang
+# After all clients are re-enrolled, remove old keys
+```
+
+After rotating Tang keys, all Clevis clients must re-create their JWE files
+(repeat Step 3) because the old JWE was encrypted with the old server keys.
+
+**Remove Tang/Clevis from a client:**
+
+1. Set `tangUnlockUrl` back to `null` (or comment it out) in `flake.nix`
+2. Rebuild: `sudo nixos-rebuild switch --flake .#px5n1`
+3. Optionally delete `keys/clevis-tang.jwe`
+
+### Security Considerations
+
+**JWE in the Nix store:**
+
+The NixOS Clevis module copies the JWE secret file into the Nix store, which is
+world-readable. This is a [known limitation](https://github.com/NixOS/nixpkgs/issues/335105).
+
+The practical impact is limited:
+
+- The JWE file is **encrypted** and can only be decrypted by contacting the
+  Tang server (network access required).
+- An unprivileged user **on the Clevis client** who has both Nix store access
+  and network access to Tang could run `clevis decrypt` to recover the LUKS
+  passphrase. However, that user is already logged into the running (unlocked)
+  system, so the passphrase provides no additional access beyond what they
+  already have.
+- The main risk is if the JWE file is **exfiltrated** and the attacker also has
+  access to the Tang server's network.
+
+**Mitigations:**
+
+- Keep the Tang server on a **trusted private network** (not exposed to the
+  internet). The `ipAddressAllow` setting in the NixOS config restricts Tang
+  to private IP ranges by default.
+- Use the existing `tangIpAllowList` parameter to further restrict which IPs
+  can reach Tang.
+- Monitor for unauthorized access to the Tang server.
+
+**What Tang/Clevis does NOT protect against:**
+
+- **Tampered boot chain** -- unlike TPM2, Clevis does not verify the kernel or
+  initramfs. An attacker who modifies the boot partition can still unlock the
+  volume (as long as Tang is reachable). Combine with TPM2 or secure boot for
+  defense in depth.
+- **Tang server compromise** -- if an attacker controls the Tang server, they
+  can respond to any Clevis request. Protect the Tang server with TPM2 for its
+  own LUKS volume.
+
+### Adding More Pis
+
+To add another Pi as a Clevis client, add it to `flake.nix`:
+
+```nix
+px5n2 = mkPi5System {
+  hostname = "px5n2";
+  tangUnlockUrl = "http://<tang-ip>:7654";
+};
+```
+
+Then follow Steps 3-5 above. Each client needs its own JWE file (or they can
+share one if they use the same LUKS passphrase, though separate files are
+recommended for independent management).
+
+The Tang server requires no changes -- it serves any Clevis client that knows
+its URL. The `ipAddressAllow` list is the only access control.
 
 ---
 

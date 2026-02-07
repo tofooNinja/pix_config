@@ -8,6 +8,11 @@
   ...
 }:
 let
+  # Tang / Clevis helpers
+  isTangServer = hostConfig.tangServer or false;
+  tangUnlockUrl = hostConfig.tangUnlockUrl or null;
+  isClevisClient = tangUnlockUrl != null;
+
   # Helper script for remote YubiKey challenge-response LUKS unlock.
   # Reads a passphrase from stdin and replies to the systemd ask-password
   # socket(s) via socat (DGRAM protocol). Used by scripts/yubikey-unlock.sh.
@@ -115,7 +120,7 @@ in
     loader.raspberry-pi = {
       enable = true;
       bootloader = "kernel"; # or "uboot";?
-      configurationLimit = 3;
+      configurationLimit = 2;
       variant = "5";
     };
 
@@ -124,6 +129,8 @@ in
     kernelParams = [
       "ip=dhcp"
       #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
+    ] ++ lib.optionals isClevisClient [
+      "rd.neednet=1" # Ensure network is up before Clevis contacts Tang
     ];
 
     supportedFilesystems = ["ext4" "vfat"];
@@ -189,6 +196,41 @@ in
         crypttabExtraOpts = ["fido2-device=auto" "tpm2-device=auto"];
       };
     };
+  };
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # TANG / CLEVIS (Network-Bound Disk Encryption)
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # Tang server: provides key escrow for Clevis clients on the local network.
+  # Other Pis contact this server during boot to unlock their LUKS volumes.
+  # Keys are auto-generated on first request and stored in /var/lib/tang.
+  # See docs/secure-boot-guide.md Part 2.6 for setup details.
+  services.tang = lib.mkIf isTangServer {
+    enable = true;
+    listenStream = [ "7654" ];
+    ipAddressAllow = hostConfig.tangIpAllowList or [
+      "10.0.0.0/8"
+      "172.16.0.0/12"
+      "192.168.0.0/16"
+    ];
+  };
+
+  # Open Tang port if firewall is enabled (currently disabled, but future-proofing).
+  networking.firewall.allowedTCPPorts = lib.mkIf isTangServer [ 7654 ];
+
+  # Clevis client: unlocks LUKS volume by contacting a Tang server at boot.
+  # Enrollment: see docs/secure-boot-guide.md Part 2.6 for step-by-step instructions.
+  # The JWE secret file is created during enrollment and stored at ./keys/clevis-tang.jwe.
+  #
+  # Known limitation: the JWE file is copied to the Nix store (world-readable).
+  # See: https://github.com/NixOS/nixpkgs/issues/335105
+  # Mitigation: the JWE can only be decrypted by contacting the Tang server.
+  # Keep the Tang server on a trusted private network.
+  boot.initrd.clevis = lib.mkIf isClevisClient {
+    enable = true;
+    useTang = true;
+    devices.crypted.secretFile = ./keys/clevis-tang.jwe;
   };
 
   # ══════════════════════════════════════════════════════════════════════════
@@ -325,5 +367,8 @@ in
     yubikey-manager # ykman CLI for YubiKey management
 
     raspberrypi-eeprom
+  ] ++ lib.optionals (isTangServer || isClevisClient) [
+    # Security / Clevis (network-bound disk encryption)
+    clevis # Automated LUKS decryption framework (Tang/Clevis)
   ];
 }

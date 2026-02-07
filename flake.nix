@@ -53,17 +53,29 @@
       px5n0Disks = { };
       px5n1Disks = { };
 
-      mkHostConfig = extraDisks: {
-        inherit primaryUser sshKeys initrdSshPort extraDisks;
+      mkHostConfig = {
+        extraDisks ? {},
+        tangServer ? false,
+        tangUnlockUrl ? null,
+        tangIpAllowList ? [ "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" ],
+      }: {
+        inherit primaryUser sshKeys initrdSshPort extraDisks
+                tangServer tangUnlockUrl tangIpAllowList;
       };
 
       mkPi5System =
         { hostname
         , extraDisks ? { }
-        ,
+        , tangServer ? false
+        , tangUnlockUrl ? null
+        , tangIpAllowList ? [ "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" ]
         }:
         nixos-raspberrypi.lib.nixosSystemFull {
-          specialArgs = inputs // { hostConfig = mkHostConfig extraDisks; };
+          specialArgs = inputs // {
+            hostConfig = mkHostConfig {
+              inherit extraDisks tangServer tangUnlockUrl tangIpAllowList;
+            };
+          };
           modules = [
             ./configuration.nix
             ./disko.nix
@@ -104,10 +116,16 @@
         px5n0 = mkPi5System {
           hostname = "px5n0";
           extraDisks = px5n0Disks;
+          # Tang server: provides network-bound disk encryption keys to other Pis.
+          # See docs/secure-boot-guide.md Part 2.6 for details.
+          tangServer = true;
         };
         px5n1 = mkPi5System {
           hostname = "px5n1";
           extraDisks = px5n1Disks;
+          # Clevis/Tang LUKS unlock: uncomment after enrollment.
+          # See docs/secure-boot-guide.md Part 2.6 for step-by-step setup.
+          # tangUnlockUrl = "http://px5n0.local:7654";  # or use static IP
         };
       };
     };
