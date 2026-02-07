@@ -89,6 +89,9 @@
               nixpkgs-fmt
               nix-output-monitor
               nixos-anywhere.packages.${system}.default
+              # YubiKey tools for HMAC-SHA1 challenge-response LUKS unlock
+              # Provides: ykpersonalize (program slots), ykchalresp (challenge-response)
+              yubikey-personalization
             ];
           };
         });

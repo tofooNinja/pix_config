@@ -6,7 +6,43 @@
   nixos-raspberrypi,
   hostConfig,
   ...
-}: {
+}:
+let
+  # Helper script for remote YubiKey challenge-response LUKS unlock.
+  # Reads a passphrase from stdin and replies to the systemd ask-password
+  # socket(s) via socat (DGRAM protocol). Used by scripts/yubikey-unlock.sh.
+  # See docs/secure-boot-guide.md for setup instructions.
+  ykUnlockScript = pkgs.writeShellScript "yk-unlock" ''
+    # Read the derived key from stdin (one line, no trailing newline)
+    IFS= read -r key
+
+    if [ -z "$key" ]; then
+      echo "Error: no key provided on stdin" >&2
+      exit 1
+    fi
+
+    replied=0
+    for f in /run/systemd/ask-password/ask.*; do
+      [ -f "$f" ] || continue
+      socket=""
+      while IFS='=' read -r k v; do
+        [ "$k" = "Socket" ] && socket="$v" && break
+      done < "$f"
+      [ -S "$socket" ] || continue
+      printf '+%s\0' "$key" | ${pkgs.socat}/bin/socat STDIN UNIX-SENDTO:"$socket"
+      replied=1
+    done
+
+    if [ "$replied" = "0" ]; then
+      echo "No pending password queries found." >&2
+      echo "Tip: wait for systemd-cryptsetup to request a password, then retry." >&2
+      exit 1
+    fi
+
+    echo "Unlock key sent."
+  '';
+in
+{
   # ══════════════════════════════════════════════════════════════════════════
   # HARDWARE
   # ══════════════════════════════════════════════════════════════════════════
@@ -136,6 +172,10 @@
       systemd = {
         enable = true;
         network.enable = true;
+        # socat is needed by yk-unlock for DGRAM socket communication
+        storePaths = ["${pkgs.socat}/bin/socat"];
+        # Remote YubiKey challenge-response unlock helper (see docs/secure-boot-guide.md)
+        extraBin.yk-unlock = "${ykUnlockScript}";
       };
 
       luks.devices.crypted = {

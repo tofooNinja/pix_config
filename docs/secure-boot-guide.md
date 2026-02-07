@@ -1,11 +1,12 @@
 # Raspberry Pi 5 -- Secure Boot and LUKS Unlock Guide
 
-This guide covers three layers of boot security for the Raspberry Pi 5 running
+This guide covers four layers of boot security for the Raspberry Pi 5 running
 NixOS with LUKS-encrypted root:
 
 1. **TPM2 for LUKS auto-unlock** (recommended, primary)
-2. **YubiKey FIDO2 for LUKS unlock** (optional, alternative)
-3. **RPi5 hardware secure boot** (advanced, optional, irreversible)
+2. **YubiKey FIDO2 for LUKS unlock** (optional, YubiKey plugged into Pi)
+3. **YubiKey remote unlock via challenge-response** (optional, YubiKey stays on local machine)
+4. **RPi5 hardware secure boot** (advanced, optional, irreversible)
 
 ---
 
@@ -34,6 +35,16 @@ NixOS with LUKS-encrypted root:
   - [Step 3: Reboot and Verify](#step-3-reboot-and-verify)
   - [Enrolling a Backup YubiKey](#enrolling-a-backup-yubikey)
   - [Re-Enrolling a Previously Enrolled YubiKey](#re-enrolling-a-previously-enrolled-yubikey)
+- [Part 2.5: YubiKey Remote Unlock via Challenge-Response](#part-25-yubikey-remote-unlock-via-challenge-response)
+  - [How It Works](#how-it-works-2)
+  - [FIDO2 vs Challenge-Response](#fido2-vs-challenge-response)
+  - [Prerequisites](#prerequisites-2)
+  - [Step 1: Enter the Dev Shell](#step-1-enter-the-dev-shell)
+  - [Step 2: Run the Enrollment Script](#step-2-run-the-enrollment-script)
+  - [Step 3: Deploy the Updated Configuration](#step-3-deploy-the-updated-configuration)
+  - [Step 4: Test the Remote Unlock](#step-4-test-the-remote-unlock)
+  - [Daily Usage](#daily-usage)
+  - [Managing the Enrollment](#managing-the-enrollment)
 - [Part 3: RPi5 Hardware Secure Boot (Advanced)](#part-3-rpi5-hardware-secure-boot-advanced)
   - [Overview](#overview)
   - [Warnings](#warnings)
@@ -499,6 +510,219 @@ Both steps will ask for the LUKS passphrase to authorize the operation.
 
 ---
 
+## Part 2.5: YubiKey Remote Unlock via Challenge-Response
+
+This section describes how to unlock the Pi's LUKS volume **remotely over SSH**
+using a YubiKey that stays plugged into your **local workstation**. Unlike the
+FIDO2 method (Part 2), the YubiKey never needs to be plugged into the Pi.
+
+### How It Works
+
+```
+┌─────────────────────────┐             ┌──────────────────────────┐
+│   Local Machine         │             │   Pi (initrd)            │
+│                         │             │                          │
+│  1. Read salt from      │             │   Booting...             │
+│     ~/.config/yk-luks/  │             │   SSH listening on 42069 │
+│                         │             │   systemd-cryptsetup     │
+│  2. Send salt to        │             │   waiting for password   │
+│     YubiKey (HMAC-SHA1) │             │                          │
+│     ┌──────┐            │             │                          │
+│     │ YK 5 │◄── touch   │             │                          │
+│     └──────┘            │             │                          │
+│                         │  SSH pipe   │                          │
+│  3. Pipe derived key ───┼────────────►│  4. /bin/yk-unlock       │
+│     to Pi initrd        │  port 42069 │     reads stdin          │
+│                         │             │     replies to socket    │
+│                         │             │                          │
+│                         │             │  5. LUKS unlocks         │
+│                         │             │     boot continues       │
+└─────────────────────────┘             └──────────────────────────┘
+```
+
+The flow uses YubiKey's **HMAC-SHA1 challenge-response** mode (slot 2):
+
+1. A random **salt** (challenge) is stored on your local machine
+2. The salt is sent to the YubiKey, which computes an **HMAC-SHA1 response**
+   using its internal secret key
+3. This 40-character hex response is the **derived key**
+4. The derived key is piped over SSH to the Pi's initrd, where `/bin/yk-unlock`
+   sends it to the systemd ask-password socket
+5. `systemd-cryptsetup` receives the key and unlocks the LUKS volume
+
+**Security properties:**
+
+- The **salt** is not secret (it's just a challenge). Without the YubiKey, it's
+  useless.
+- The YubiKey's **internal HMAC-SHA1 key** never leaves the device.
+- The **derived key** is transmitted over an encrypted SSH tunnel.
+- The **passphrase fallback** (key slot 0) always works if the YubiKey is
+  unavailable.
+
+### FIDO2 vs Challenge-Response
+
+| Feature | FIDO2 (Part 2) | Challenge-Response (this section) |
+|---|---|---|
+| YubiKey location | Plugged into the **Pi** | Plugged into your **local machine** |
+| Protocol | FIDO2 hmac-secret | HMAC-SHA1 challenge-response |
+| Enrollment tool | `systemd-cryptenroll` | `scripts/yubikey-enroll.sh` |
+| NixOS integration | Native (`fido2-device=auto`) | Custom (`/bin/yk-unlock` in initrd) |
+| Requires SSH | No | Yes (the whole point) |
+| Best for | Pi with physical YubiKey | Headless Pi unlocked from workstation |
+
+Both methods can coexist. The challenge-response derived key is just another
+LUKS passphrase from LUKS's perspective.
+
+### Prerequisites
+
+- **YubiKey 5 series** (or any YubiKey supporting HMAC-SHA1 challenge-response)
+- **Local machine** with `yubikey-personalization` installed (available in the
+  flake's dev shell)
+- **Pi must be reachable** via SSH on port 42069 during initrd (already
+  configured)
+- **Pi configuration rebuilt** with the latest `configuration.nix` (which
+  includes `/bin/yk-unlock` and `socat` in the initrd)
+
+### Step 1: Enter the Dev Shell
+
+On your local machine, enter the flake's dev shell to get access to the
+YubiKey tools:
+
+```bash
+cd /path/to/pix5-minimal-encrypted
+nix develop
+```
+
+This provides `ykchalresp`, `ykpersonalize`, and `ykinfo`.
+
+### Step 2: Run the Enrollment Script
+
+The enrollment script handles everything: programming the YubiKey slot,
+generating the salt, computing the derived key, and enrolling it in LUKS.
+
+```bash
+./scripts/yubikey-enroll.sh <hostname> [pi-ip]
+```
+
+For example:
+
+```bash
+# If the Pi is reachable by hostname
+./scripts/yubikey-enroll.sh px5n0
+
+# Or specify the IP explicitly
+./scripts/yubikey-enroll.sh px5n0 10.13.12.249
+```
+
+The script will:
+
+1. **Check your YubiKey** and offer to program slot 2 for HMAC-SHA1
+   challenge-response (if not already set up)
+2. **Generate a random salt** (128 hex characters / 64 bytes of entropy)
+3. **Compute the derived key** by sending the salt to the YubiKey
+4. **SSH to the Pi** (port 22, must be fully booted) and enroll the derived
+   key as a new LUKS key slot. You'll be prompted for the current LUKS
+   passphrase to authorize the enrollment.
+5. **Save the salt** to `~/.config/yk-luks/<hostname>.salt`
+
+> **Important:** Back up the salt file. Without it (and the YubiKey), you
+> cannot compute the derived key. The passphrase fallback always works, but
+> you'd need to re-enroll to use the YubiKey again.
+
+### Step 3: Deploy the Updated Configuration
+
+The `configuration.nix` includes the `/bin/yk-unlock` helper and `socat` in
+the initrd. If you haven't deployed this yet, build and deploy to the Pi:
+
+```bash
+# From your local machine (cross-compile or use nixos-anywhere)
+# Or SSH to the Pi and rebuild:
+ssh root@<pi-ip>
+cd /path/to/pix5-minimal-encrypted
+sudo nixos-rebuild switch --flake .#<hostname>
+```
+
+### Step 4: Test the Remote Unlock
+
+Reboot the Pi and wait for it to reach the initrd stage (SSH on port 42069):
+
+```bash
+# Reboot the Pi
+ssh root@<pi-ip> 'sudo reboot'
+
+# Wait ~30 seconds for the Pi to reach initrd, then:
+./scripts/yubikey-unlock.sh px5n0 10.13.12.249
+```
+
+You should see:
+
+```
+Computing YubiKey response (touch may be required)...
+Sending unlock key to 10.13.12.249:42069...
+Unlock key sent.
+Done. The Pi should continue booting if the key was accepted.
+```
+
+If TPM2 or FIDO2 auto-unlock triggers first (because that hardware is also
+present), the challenge-response unlock is not needed -- the Pi will boot
+automatically.
+
+### Daily Usage
+
+Each time the Pi needs unlocking (e.g., after a reboot or power cycle):
+
+```bash
+# From your local machine, with YubiKey plugged in:
+./scripts/yubikey-unlock.sh px5n0 10.13.12.249
+```
+
+Or for the second Pi:
+
+```bash
+./scripts/yubikey-unlock.sh px5n1 10.13.12.250
+```
+
+> **Tip:** If the Pi uses a static IP, you can omit the IP argument and let
+> the script use the hostname directly (assuming DNS/mDNS resolves it).
+
+### Managing the Enrollment
+
+**List LUKS key slots** (on the Pi):
+
+```bash
+sudo cryptsetup luksDump /dev/disk/by-partlabel/disk-sd-system
+```
+
+Look for the `Keyslots:` section. Your passphrase is slot 0. The
+challenge-response derived key will be in a higher-numbered slot.
+
+**Remove the challenge-response enrollment** (on the Pi):
+
+```bash
+# Replace N with the slot number shown in luksDump
+sudo cryptsetup luksKillSlot /dev/disk/by-partlabel/disk-sd-system N
+```
+
+**Re-enroll with a new salt** (on your local machine):
+
+```bash
+./scripts/yubikey-enroll.sh px5n0 10.13.12.249
+# Choose "y" when asked to generate a new salt
+```
+
+This adds a new key slot. Remember to remove the old slot afterward.
+
+**Enroll a second YubiKey:**
+
+Program the second YubiKey's slot 2 with the **same HMAC-SHA1 secret** using
+`ykpersonalize`, then run the enrollment script. The same salt will produce
+the same derived key, so both YubiKeys work with the same LUKS key slot.
+
+Alternatively, enroll each YubiKey separately (different salts, different LUKS
+key slots) for independent revocation.
+
+---
+
 ## Part 3: RPi5 Hardware Secure Boot (Advanced)
 
 ### Overview
@@ -748,6 +972,55 @@ affected. If you encounter this:
    ```nix
    boot.initrd.systemd.storePaths = [ pkgs.libfido2 ];
    ```
+
+### Remote YubiKey unlock: "No pending password queries found"
+
+**Symptom**: `yk-unlock` reports no pending queries when running the unlock
+script.
+
+**Solutions**:
+
+1. The Pi may not have reached the LUKS password prompt yet. Wait a few more
+   seconds and retry:
+   ```bash
+   sleep 10 && ./scripts/yubikey-unlock.sh px5n0 10.13.12.249
+   ```
+2. TPM2 or FIDO2 may have already unlocked the volume automatically. Check if
+   the Pi finished booting (try SSH on port 22).
+3. Verify the initrd SSH is actually running:
+   ```bash
+   ssh -p 42069 -o ConnectTimeout=5 root@<pi-ip> echo ok
+   ```
+
+### Remote YubiKey unlock: "Connection refused" on port 42069
+
+**Symptom**: Cannot SSH to the Pi's initrd.
+
+**Solutions**:
+
+1. The Pi may still be in early boot (before networking). Wait longer.
+2. If the Pi uses DHCP, the IP may have changed. Check your router's DHCP
+   leases.
+3. The Pi may have already booted past initrd. Try SSH on port 22 instead.
+
+### Remote YubiKey unlock: key rejected (wrong passphrase)
+
+**Symptom**: `yk-unlock` sends the key but LUKS doesn't unlock.
+
+**Solutions**:
+
+1. Verify the salt file matches what was used during enrollment:
+   ```bash
+   cat ~/.config/yk-luks/px5n0.salt
+   ```
+2. Verify the YubiKey produces the expected response:
+   ```bash
+   printf '%s' "$(cat ~/.config/yk-luks/px5n0.salt)" | ykchalresp -2 -H -i-
+   ```
+3. If you reprogrammed the YubiKey slot since enrollment, the HMAC-SHA1 secret
+   changed. Re-enroll: `./scripts/yubikey-enroll.sh px5n0`
+4. The passphrase fallback always works -- SSH in manually and use
+   `systemd-tty-ask-password-agent`.
 
 ### LUKS header corrupted
 
