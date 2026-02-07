@@ -1,10 +1,11 @@
 # Minimal encrypted NixOS configuration for Raspberry Pi 5
-{ config
-, lib
-, pkgs
-, nixos-raspberrypi
-, hostConfig
-, ...
+{
+  config,
+  lib,
+  pkgs,
+  nixos-raspberrypi,
+  hostConfig,
+  ...
 }: {
   # ══════════════════════════════════════════════════════════════════════════
   # HARDWARE
@@ -43,6 +44,15 @@
         value = "3";
       };
     };
+    # TPM 2.0 SPI module (Infineon SLB 9670/9672)
+    # Requires a Raspberry Pi-compatible TPM board connected to the GPIO SPI pins.
+    # See docs/secure-boot-guide.md for compatible hardware.
+    dt-overlays = {
+      tpm-slb9670 = {
+        enable = true;
+        params = {};
+      };
+    };
   };
 
   # ══════════════════════════════════════════════════════════════════════════
@@ -51,14 +61,14 @@
 
   # Fix for no screen out during password prompt
   # https://github.com/nvmd/nixos-raspberrypi/issues/49#issuecomment-3367765772
-  boot.blacklistedKernelModules = [ "vc4" ];
+  boot.blacklistedKernelModules = ["vc4"];
   systemd.services.modprobe-vc4 = {
     serviceConfig = {
       Type = "oneshot";
       User = "root";
     };
-    before = [ "multi-user.target" ];
-    wantedBy = [ "multi-user.target" ];
+    before = ["multi-user.target"];
+    wantedBy = ["multi-user.target"];
     script = "/run/current-system/sw/bin/modprobe vc4";
   };
 
@@ -80,7 +90,7 @@
       #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
     ];
 
-    supportedFilesystems = [ "ext4" "vfat" ];
+    supportedFilesystems = ["ext4" "vfat"];
 
     initrd = {
       # Kernel modules needed for mounting USB VFAT devices in initrd stage
@@ -97,12 +107,16 @@
         "nls_cp437"
         "nls_iso8859_1"
         "ext4" # in case ext4 is not configured as builtin
-        "hid_generic" # needed for YubiKey FIDO2 during early boot
-        "usbhid" # USB HID transport for YubiKey
+        # TPM 2.0 SPI module support (Infineon SLB 9670/9672)
+        "tpm_tis_spi"
+        "tpm_tis_core"
+        # USB HID for YubiKey FIDO2 (optional, see docs/secure-boot-guide.md)
+        "hid_generic"
+        "usbhid"
       ];
       #kernelModules = [ "rp1" "bcm2712-rpi-5-b" ];
 
-      availableKernelModules = [ "hid" "evdev" ];
+      availableKernelModules = ["hid" "evdev"];
 
       network = {
         enable = true;
@@ -127,10 +141,12 @@
       luks.devices.crypted = {
         device = "/dev/disk/by-partlabel/disk-sd-system";
         allowDiscards = true;
-        # YubiKey FIDO2 unlock: systemd-cryptsetup will look for a FIDO2 token.
-        # Passphrase fallback is automatic if no token is present.
-        # Enroll with: sudo systemd-cryptenroll --fido2-device=auto /dev/disk/by-partlabel/disk-sd-system
-        crypttabExtraOpts = [ "fido2-device=auto" ];
+        # TPM2 auto-unlock: systemd-cryptsetup unseals the LUKS key from the TPM.
+        # Passphrase fallback is automatic if TPM is absent or PCR mismatch.
+        # Enroll with: sudo systemd-cryptenroll --tpm2-device=auto /dev/disk/by-partlabel/disk-sd-system
+        # or: sudo systemd-cryptenroll \ --fido2-device=auto \ --fido2-with-client-pin=no \ --fido2-with-user-presence=no \ /dev/disk/by-partlabel/disk-sd-system
+        # Optional: add "fido2-device=auto" for YubiKey FIDO2 as alternative unlock method.
+        crypttabExtraOpts = ["fido2-device=auto" "tpm2-device=auto"];
       };
     };
   };
@@ -193,7 +209,7 @@
 
   users.users.${hostConfig.primaryUser} = {
     isNormalUser = true;
-    extraGroups = [ "wheel" "networkmanager" "video" ];
+    extraGroups = ["wheel" "networkmanager" "video" "tss"];
     initialPassword = "nix";
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
@@ -209,6 +225,12 @@
       enable = true;
       wheelNeedsPassword = false;
     };
+    # TPM 2.0 support: exposes /dev/tpmrm0 and sets up tpm2-abrmd resource manager
+    tpm2 = {
+      enable = true;
+      pkcs11.enable = true;
+      tctiEnvironment.enable = true;
+    };
   };
 
   services.getty.autologinUser = hostConfig.primaryUser;
@@ -219,8 +241,8 @@
   };
 
   nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ];
-    trusted-users = [ "nixos" hostConfig.primaryUser "root" ];
+    experimental-features = ["nix-command" "flakes"];
+    trusted-users = ["nixos" hostConfig.primaryUser "root"];
     download-buffer-size = 500000000;
   };
 
@@ -254,7 +276,11 @@
     screen
     minicom
 
-    # Security / YubiKey
+    # Security / TPM2
+    tpm2-tools # TPM2 CLI tools (tpm2_*)
+    tpm2-tss # TPM2 software stack
+
+    # Security / YubiKey (optional, for FIDO2 LUKS unlock)
     libfido2 # FIDO2 library and fido2-token CLI
     yubikey-manager # ykman CLI for YubiKey management
 
