@@ -6,8 +6,7 @@
   nixos-raspberrypi,
   hostConfig,
   ...
-}:
-let
+}: let
   # Tang / Clevis helpers
   isTangServer = hostConfig.tangServer or false;
   tangUnlockUrl = hostConfig.tangUnlockUrl or null;
@@ -46,8 +45,7 @@ let
 
     echo "Unlock key sent."
   '';
-in
-{
+in {
   # ══════════════════════════════════════════════════════════════════════════
   # HARDWARE
   # ══════════════════════════════════════════════════════════════════════════
@@ -58,6 +56,13 @@ in
     raspberry-pi-5.display-vc4
     #usb-gadget-ethernet # Configures USB Gadget/Ethernet - Ethernet emulation over USB
   ];
+
+  # Set the following using rpi-eeprom-config -e
+  # [all]
+  # BOOT_UART=1
+  # BOOT_ORDER=0xf41
+  # HDMI_DELAY=1
+  # BOOT_WATCHDOG_TIMEOUT=600
 
   # Pi firmware config.txt settings
   hardware.raspberry-pi.config.all = {
@@ -72,7 +77,7 @@ in
     };
     base-dt-params = {
       # forward uart on pi5 to GPIO 14/15 instead of uart-port
-      uart0_console.enable = true;
+      uart0_console.enable = hostConfig.uart0Console;
       # https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#enable-pcie
       pciex1 = {
         enable = true;
@@ -126,12 +131,14 @@ in
 
     # see also nixos-raspberrypi/module/raspberrypi.nix
     # Static IP during boot for SSH unlock: 10.13.12.249
-    kernelParams = [
-      "ip=dhcp"
-      #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
-    ] ++ lib.optionals isClevisClient [
-      "rd.neednet=1" # Ensure network is up before Clevis contacts Tang
-    ];
+    kernelParams =
+      [
+        "ip=dhcp"
+        #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
+      ]
+      ++ lib.optionals isClevisClient [
+        "rd.neednet=1" # Ensure network is up before Clevis contacts Tang
+      ];
 
     supportedFilesystems = ["ext4" "vfat"];
 
@@ -191,7 +198,7 @@ in
         # TPM2 auto-unlock: systemd-cryptsetup unseals the LUKS key from the TPM.
         # Passphrase fallback is automatic if TPM is absent or PCR mismatch.
         # Enroll with: sudo systemd-cryptenroll --tpm2-device=auto /dev/disk/by-partlabel/disk-sd-system
-        # or: sudo systemd-cryptenroll \ --fido2-device=auto \ --fido2-with-client-pin=no \ --fido2-with-user-presence=no \ /dev/disk/by-partlabel/disk-sd-system
+        # or: sudo systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=no /dev/disk/by-partlabel/disk-sd-system
         # Optional: add "fido2-device=auto" for YubiKey FIDO2 as alternative unlock method.
         crypttabExtraOpts = ["fido2-device=auto" "tpm2-device=auto"];
       };
@@ -208,16 +215,17 @@ in
   # See docs/secure-boot-guide.md Part 2.6 for setup details.
   services.tang = lib.mkIf isTangServer {
     enable = true;
-    listenStream = [ "7654" ];
-    ipAddressAllow = hostConfig.tangIpAllowList or [
-      "10.0.0.0/8"
-      "172.16.0.0/12"
-      "192.168.0.0/16"
-    ];
+    listenStream = ["7654"];
+    ipAddressAllow =
+      hostConfig.tangIpAllowList or [
+        "10.0.0.0/8"
+        "172.16.0.0/12"
+        "192.168.0.0/16"
+      ];
   };
 
   # Open Tang port if firewall is enabled (currently disabled, but future-proofing).
-  networking.firewall.allowedTCPPorts = lib.mkIf isTangServer [ 7654 ];
+  networking.firewall.allowedTCPPorts = lib.mkIf isTangServer [7654];
 
   # Clevis client: unlocks LUKS volume by contacting a Tang server at boot.
   # Enrollment: see docs/secure-boot-guide.md Part 2.6 for step-by-step instructions.
@@ -332,43 +340,45 @@ in
   # PACKAGES
   # ══════════════════════════════════════════════════════════════════════════
 
-  environment.systemPackages = with pkgs; [
-    # File management
-    tree
+  environment.systemPackages = with pkgs;
+    [
+      # File management
+      tree
 
-    # Editors
-    vim
-    neovim
+      # Editors
+      vim
+      neovim
 
-    # Version control
-    git
-    tig
+      # Version control
+      git
+      tig
 
-    # Documentation
-    tealdeer
+      # Documentation
+      tealdeer
 
-    # System
-    btop
-    duf
-    lshw
-    pciutils
-    usbutils
+      # System
+      btop
+      duf
+      lshw
+      pciutils
+      usbutils
 
-    # Serial/terminal tools
-    screen
-    minicom
+      # Serial/terminal tools
+      screen
+      minicom
 
-    # Security / TPM2
-    tpm2-tools # TPM2 CLI tools (tpm2_*)
-    tpm2-tss # TPM2 software stack
+      # Security / TPM2
+      tpm2-tools # TPM2 CLI tools (tpm2_*)
+      tpm2-tss # TPM2 software stack
 
-    # Security / YubiKey (optional, for FIDO2 LUKS unlock)
-    libfido2 # FIDO2 library and fido2-token CLI
-    yubikey-manager # ykman CLI for YubiKey management
+      # Security / YubiKey (optional, for FIDO2 LUKS unlock)
+      libfido2 # FIDO2 library and fido2-token CLI
+      yubikey-manager # ykman CLI for YubiKey management
 
-    raspberrypi-eeprom
-  ] ++ lib.optionals (isTangServer || isClevisClient) [
-    # Security / Clevis (network-bound disk encryption)
-    clevis # Automated LUKS decryption framework (Tang/Clevis)
-  ];
+      raspberrypi-eeprom
+    ]
+    ++ lib.optionals (isTangServer || isClevisClient) [
+      # Security / Clevis (network-bound disk encryption)
+      clevis # Automated LUKS decryption framework (Tang/Clevis)
+    ];
 }

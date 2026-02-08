@@ -19,7 +19,7 @@
                 type = "filesystem";
                 format = "vfat";
                 mountpoint = "/boot/firmware";
-                mountOptions = [ "noatime" "noauto" "x-systemd.automount" "x-systemd.idle-timeout=1min" ];
+                mountOptions = [ "noatime" "noauto" "x-systemd.automount" ]; # "x-systemd.idle-timeout=1min" ];
               };
             };
 
@@ -32,7 +32,7 @@
                 type = "filesystem";
                 format = "vfat";
                 mountpoint = "/boot";
-                mountOptions = [ "noatime" "noauto" "x-systemd.automount" "x-systemd.idle-timeout=1min" "umask=0077" ];
+                mountOptions = [ "noatime" "noauto" "x-systemd.automount" "umask=0077" ]; # "x-systemd.idle-timeout=1min" ];
               };
             };
 
