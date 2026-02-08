@@ -1,11 +1,51 @@
 # Minimal encrypted NixOS configuration for Raspberry Pi 5
-{ config
-, lib
-, pkgs
-, nixos-raspberrypi
-, hostConfig
-, ...
-}: {
+{
+  config,
+  lib,
+  pkgs,
+  nixos-raspberrypi,
+  hostConfig,
+  ...
+}: let
+  # Tang / Clevis helpers
+  isTangServer = hostConfig.tangServer or false;
+  tangUnlockUrl = hostConfig.tangUnlockUrl or null;
+  isClevisClient = tangUnlockUrl != null;
+
+  # Helper script for remote YubiKey challenge-response LUKS unlock.
+  # Reads a passphrase from stdin and replies to the systemd ask-password
+  # socket(s) via socat (DGRAM protocol). Used by scripts/yubikey-unlock.sh.
+  # See docs/secure-boot-guide.md for setup instructions.
+  ykUnlockScript = pkgs.writeShellScript "yk-unlock" ''
+    # Read the derived key from stdin (one line, no trailing newline)
+    IFS= read -r key
+
+    if [ -z "$key" ]; then
+      echo "Error: no key provided on stdin" >&2
+      exit 1
+    fi
+
+    replied=0
+    for f in /run/systemd/ask-password/ask.*; do
+      [ -f "$f" ] || continue
+      socket=""
+      while IFS='=' read -r k v; do
+        [ "$k" = "Socket" ] && socket="$v" && break
+      done < "$f"
+      [ -S "$socket" ] || continue
+      printf '+%s\0' "$key" | ${pkgs.socat}/bin/socat STDIN UNIX-SENDTO:"$socket"
+      replied=1
+    done
+
+    if [ "$replied" = "0" ]; then
+      echo "No pending password queries found." >&2
+      echo "Tip: wait for systemd-cryptsetup to request a password, then retry." >&2
+      exit 1
+    fi
+
+    echo "Unlock key sent."
+  '';
+in {
   # ══════════════════════════════════════════════════════════════════════════
   # HARDWARE
   # ══════════════════════════════════════════════════════════════════════════
@@ -16,6 +56,13 @@
     raspberry-pi-5.display-vc4
     #usb-gadget-ethernet # Configures USB Gadget/Ethernet - Ethernet emulation over USB
   ];
+
+  # Set the following using rpi-eeprom-config -e
+  # [all]
+  # BOOT_UART=1
+  # BOOT_ORDER=0xf41
+  # HDMI_DELAY=1
+  # BOOT_WATCHDOG_TIMEOUT=600
 
   # Pi firmware config.txt settings
   hardware.raspberry-pi.config.all = {
@@ -30,7 +77,7 @@
     };
     base-dt-params = {
       # forward uart on pi5 to GPIO 14/15 instead of uart-port
-      uart0_console.enable = true;
+      uart0_console.enable = hostConfig.uart0Console;
       # https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#enable-pcie
       pciex1 = {
         enable = true;
@@ -43,6 +90,15 @@
         value = "3";
       };
     };
+    # TPM 2.0 SPI module (Infineon SLB 9670/9672)
+    # Requires a Raspberry Pi-compatible TPM board connected to the GPIO SPI pins.
+    # See docs/secure-boot-guide.md for compatible hardware.
+    dt-overlays = {
+      tpm-slb9670 = {
+        enable = true;
+        params = {};
+      };
+    };
   };
 
   # ══════════════════════════════════════════════════════════════════════════
@@ -51,14 +107,14 @@
 
   # Fix for no screen out during password prompt
   # https://github.com/nvmd/nixos-raspberrypi/issues/49#issuecomment-3367765772
-  boot.blacklistedKernelModules = [ "vc4" ];
+  boot.blacklistedKernelModules = ["vc4"];
   systemd.services.modprobe-vc4 = {
     serviceConfig = {
       Type = "oneshot";
       User = "root";
     };
-    before = [ "multi-user.target" ];
-    wantedBy = [ "multi-user.target" ];
+    before = ["multi-user.target"];
+    wantedBy = ["multi-user.target"];
     script = "/run/current-system/sw/bin/modprobe vc4";
   };
 
@@ -69,18 +125,22 @@
     loader.raspberry-pi = {
       enable = true;
       bootloader = "kernel"; # or "uboot";?
-      configurationLimit = 3;
+      configurationLimit = 2;
       variant = "5";
     };
 
     # see also nixos-raspberrypi/module/raspberrypi.nix
     # Static IP during boot for SSH unlock: 10.13.12.249
-    kernelParams = [
-      "ip=dhcp"
-      #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
-    ];
+    kernelParams =
+      [
+        "ip=dhcp"
+        #"ip=10.13.12.249::10.13.12.1:255.255.255.0::end0:off"
+      ]
+      ++ lib.optionals isClevisClient [
+        "rd.neednet=1" # Ensure network is up before Clevis contacts Tang
+      ];
 
-    supportedFilesystems = [ "ext4" "vfat" ];
+    supportedFilesystems = ["ext4" "vfat"];
 
     initrd = {
       # Kernel modules needed for mounting USB VFAT devices in initrd stage
@@ -97,12 +157,16 @@
         "nls_cp437"
         "nls_iso8859_1"
         "ext4" # in case ext4 is not configured as builtin
-        "hid_generic" # needed for YubiKey FIDO2 during early boot
-        "usbhid" # USB HID transport for YubiKey
+        # TPM 2.0 SPI module support (Infineon SLB 9670/9672)
+        "tpm_tis_spi"
+        "tpm_tis_core"
+        # USB HID for YubiKey FIDO2 (optional, see docs/secure-boot-guide.md)
+        "hid_generic"
+        "usbhid"
       ];
       #kernelModules = [ "rp1" "bcm2712-rpi-5-b" ];
 
-      availableKernelModules = [ "hid" "evdev" ];
+      availableKernelModules = ["hid" "evdev"];
 
       network = {
         enable = true;
@@ -122,17 +186,59 @@
       systemd = {
         enable = true;
         network.enable = true;
+        # socat is needed by yk-unlock for DGRAM socket communication
+        storePaths = ["${pkgs.socat}/bin/socat"];
+        # Remote YubiKey challenge-response unlock helper (see docs/secure-boot-guide.md)
+        extraBin.yk-unlock = "${ykUnlockScript}";
       };
 
       luks.devices.crypted = {
         device = "/dev/disk/by-partlabel/disk-sd-system";
         allowDiscards = true;
-        # YubiKey FIDO2 unlock: systemd-cryptsetup will look for a FIDO2 token.
-        # Passphrase fallback is automatic if no token is present.
-        # Enroll with: sudo systemd-cryptenroll --fido2-device=auto /dev/disk/by-partlabel/disk-sd-system
-        crypttabExtraOpts = [ "fido2-device=auto" ];
+        # TPM2 auto-unlock: systemd-cryptsetup unseals the LUKS key from the TPM.
+        # Passphrase fallback is automatic if TPM is absent or PCR mismatch.
+        # Enroll with: sudo systemd-cryptenroll --tpm2-device=auto /dev/disk/by-partlabel/disk-sd-system
+        # or: sudo systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=no /dev/disk/by-partlabel/disk-sd-system
+        # Optional: add "fido2-device=auto" for YubiKey FIDO2 as alternative unlock method.
+        crypttabExtraOpts = ["fido2-device=auto" "tpm2-device=auto"];
       };
     };
+  };
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # TANG / CLEVIS (Network-Bound Disk Encryption)
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # Tang server: provides key escrow for Clevis clients on the local network.
+  # Other Pis contact this server during boot to unlock their LUKS volumes.
+  # Keys are auto-generated on first request and stored in /var/lib/tang.
+  # See docs/secure-boot-guide.md Part 2.6 for setup details.
+  services.tang = lib.mkIf isTangServer {
+    enable = true;
+    listenStream = ["7654"];
+    ipAddressAllow =
+      hostConfig.tangIpAllowList or [
+        "10.0.0.0/8"
+        "172.16.0.0/12"
+        "192.168.0.0/16"
+      ];
+  };
+
+  # Open Tang port if firewall is enabled (currently disabled, but future-proofing).
+  networking.firewall.allowedTCPPorts = lib.mkIf isTangServer [7654];
+
+  # Clevis client: unlocks LUKS volume by contacting a Tang server at boot.
+  # Enrollment: see docs/secure-boot-guide.md Part 2.6 for step-by-step instructions.
+  # The JWE secret file is created during enrollment and stored at ./keys/clevis-tang.jwe.
+  #
+  # Known limitation: the JWE file is copied to the Nix store (world-readable).
+  # See: https://github.com/NixOS/nixpkgs/issues/335105
+  # Mitigation: the JWE can only be decrypted by contacting the Tang server.
+  # Keep the Tang server on a trusted private network.
+  boot.initrd.clevis = lib.mkIf isClevisClient {
+    enable = true;
+    useTang = true;
+    devices.crypted.secretFile = ./keys/clevis-tang.jwe;
   };
 
   # ══════════════════════════════════════════════════════════════════════════
@@ -193,7 +299,7 @@
 
   users.users.${hostConfig.primaryUser} = {
     isNormalUser = true;
-    extraGroups = [ "wheel" "networkmanager" "video" ];
+    extraGroups = ["wheel" "networkmanager" "video" "tss"];
     initialPassword = "nix";
     openssh.authorizedKeys.keys = hostConfig.sshKeys;
   };
@@ -209,6 +315,12 @@
       enable = true;
       wheelNeedsPassword = false;
     };
+    # TPM 2.0 support: exposes /dev/tpmrm0 and sets up tpm2-abrmd resource manager
+    tpm2 = {
+      enable = true;
+      pkcs11.enable = true;
+      tctiEnvironment.enable = true;
+    };
   };
 
   services.getty.autologinUser = hostConfig.primaryUser;
@@ -219,8 +331,8 @@
   };
 
   nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ];
-    trusted-users = [ "nixos" hostConfig.primaryUser "root" ];
+    experimental-features = ["nix-command" "flakes"];
+    trusted-users = ["nixos" hostConfig.primaryUser "root"];
     download-buffer-size = 500000000;
   };
 
@@ -228,36 +340,45 @@
   # PACKAGES
   # ══════════════════════════════════════════════════════════════════════════
 
-  environment.systemPackages = with pkgs; [
-    # File management
-    tree
+  environment.systemPackages = with pkgs;
+    [
+      # File management
+      tree
 
-    # Editors
-    vim
-    neovim
+      # Editors
+      vim
+      neovim
 
-    # Version control
-    git
-    tig
+      # Version control
+      git
+      tig
 
-    # Documentation
-    tealdeer
+      # Documentation
+      tealdeer
 
-    # System
-    btop
-    duf
-    lshw
-    pciutils
-    usbutils
+      # System
+      btop
+      duf
+      lshw
+      pciutils
+      usbutils
 
-    # Serial/terminal tools
-    screen
-    minicom
+      # Serial/terminal tools
+      screen
+      minicom
 
-    # Security / YubiKey
-    libfido2 # FIDO2 library and fido2-token CLI
-    yubikey-manager # ykman CLI for YubiKey management
+      # Security / TPM2
+      tpm2-tools # TPM2 CLI tools (tpm2_*)
+      tpm2-tss # TPM2 software stack
 
-    raspberrypi-eeprom
-  ];
+      # Security / YubiKey (optional, for FIDO2 LUKS unlock)
+      libfido2 # FIDO2 library and fido2-token CLI
+      yubikey-manager # ykman CLI for YubiKey management
+
+      raspberrypi-eeprom
+    ]
+    ++ lib.optionals (isTangServer || isClevisClient) [
+      # Security / Clevis (network-bound disk encryption)
+      clevis # Automated LUKS decryption framework (Tang/Clevis)
+    ];
 }

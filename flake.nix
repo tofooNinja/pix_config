@@ -29,83 +29,122 @@
     };
   };
 
-  outputs =
-    { self
-    , nixpkgs
-    , nixos-raspberrypi
-    , disko
-    , nixos-anywhere
-    , ...
-    } @ inputs:
-    let
-      allSystems = nixpkgs.lib.systems.flakeExposed;
-      forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f system);
+  outputs = {
+    self,
+    nixpkgs,
+    nixos-raspberrypi,
+    disko,
+    nixos-anywhere,
+    ...
+  } @ inputs: let
+    allSystems = nixpkgs.lib.systems.flakeExposed;
+    forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f system);
 
-      # Shared settings
-      primaryUser = "tofoo";
-      sshKeys = [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
-      ];
-      initrdSshPort = 42069;
+    # Shared settings
+    primaryUser = "tofoo";
+    sshKeys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBI4vdV8fwBFrtVGxWWmEQ5qZFV/vcM9ExyHZsn0uai0 tofoo@hole"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCYOfQXuaY9TxgYgUPLfZw6GDI3fvkpu3Q0xj2AsgdK tofoo@nixos"
+    ];
+    initrdSshPort = 42069;
 
-      # Per-device disk configurations (empty for both - SD card only)
-      px5n0Disks = { };
-      px5n1Disks = { };
+    # Per-device disk configurations (empty for both - SD card only)
+    px5n0Disks = {};
+    px5n1Disks = {};
+    px5n2Disks = {};
 
-      mkHostConfig = extraDisks: {
-        inherit primaryUser sshKeys initrdSshPort extraDisks;
-      };
+    mkHostConfig = {
+      uart0Console ? true,
+      extraDisks ? {},
+      tangServer ? false,
+      tangUnlockUrl ? null,
+      tangIpAllowList ? ["10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16"],
+    }: {
+      inherit
+        primaryUser
+        sshKeys
+        initrdSshPort
+        uart0Console
+        extraDisks
+        tangServer
+        tangUnlockUrl
+        tangIpAllowList
+        ;
+    };
 
-      mkPi5System =
-        { hostname
-        , extraDisks ? { }
-        ,
-        }:
-        nixos-raspberrypi.lib.nixosSystemFull {
-          specialArgs = inputs // { hostConfig = mkHostConfig extraDisks; };
-          modules = [
-            ./configuration.nix
-            ./disko.nix
-            disko.nixosModules.disko
-            {
-              networking.hostName = hostname;
-              time.timeZone = "UTC";
-              system.stateVersion = "24.05";
-            }
-          ];
-        };
-    in
-    {
-      # Development shell with useful tools
-      devShells = forSystems allSystems (system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          default = pkgs.mkShell {
-            nativeBuildInputs = with pkgs; [
-              nil
-              nixpkgs-fmt
-              nix-output-monitor
-              nixos-anywhere.packages.${system}.default
-            ];
+    mkPi5System = {
+      hostname,
+      extraDisks ? {},
+      tangServer ? false,
+      tangUnlockUrl ? null,
+      #tangIpAllowList ? ["10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16"],
+      tangIpAllowList ? ["10.13.12.0/24"],
+      uart0Console ? true,
+    }:
+      nixos-raspberrypi.lib.nixosSystemFull {
+        specialArgs =
+          inputs
+          // {
+            hostConfig = mkHostConfig {
+              inherit uart0Console extraDisks tangServer tangUnlockUrl tangIpAllowList;
+            };
           };
-        });
+        modules = [
+          ./configuration.nix
+          ./disko.nix
+          disko.nixosModules.disko
+          {
+            networking.hostName = hostname;
+            time.timeZone = "UTC";
+            system.stateVersion = "24.05";
+          }
+        ];
+      };
+  in {
+    # Development shell with useful tools
+    devShells = forSystems allSystems (system: let
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      default = pkgs.mkShell {
+        nativeBuildInputs = with pkgs; [
+          nil
+          nixpkgs-fmt
+          nix-output-monitor
+          nixos-anywhere.packages.${system}.default
+          # YubiKey tools for HMAC-SHA1 challenge-response LUKS unlock
+          # Provides: ykpersonalize (program slots), ykchalresp (challenge-response)
+          yubikey-personalization
+        ];
+      };
+    });
 
-      # Expose nixos-anywhere for deployment
-      packages.x86_64-linux.default = nixos-anywhere.packages.x86_64-linux.default;
-      packages.aarch64-linux.default = nixos-anywhere.packages.aarch64-linux.default;
+    # Expose nixos-anywhere for deployment
+    packages.x86_64-linux.default = nixos-anywhere.packages.x86_64-linux.default;
+    packages.aarch64-linux.default = nixos-anywhere.packages.aarch64-linux.default;
 
-      nixosConfigurations = {
-        px5n0 = mkPi5System {
-          hostname = "px5n0";
-          extraDisks = px5n0Disks;
-        };
-        px5n1 = mkPi5System {
-          hostname = "px5n1";
-          extraDisks = px5n1Disks;
-        };
+    nixosConfigurations = {
+      pix5n0 = mkPi5System {
+        hostname = "pix5n0";
+        extraDisks = px5n0Disks;
+        # Tang server: provides network-bound disk encryption keys to other Pis.
+        # See docs/secure-boot-guide.md Part 2.6 for details.
+        tangServer = true;
+      };
+      pix5n1 = mkPi5System {
+        hostname = "pix5n1";
+        extraDisks = px5n1Disks;
+        # Clevis/Tang LUKS unlock: uncomment after enrollment.
+        # See docs/secure-boot-guide.md Part 2.6 for step-by-step setup.
+        tangUnlockUrl = "http://10.13.12.110:7654";
+        uart0Console = false;
+      };
+      pix5n2 = mkPi5System {
+        hostname = "pix5n2";
+        extraDisks = px5n2Disks;
+        # Clevis/Tang LUKS unlock: uncomment after enrollment.
+        # See docs/secure-boot-guide.md Part 2.6 for step-by-step setup.
+        tangUnlockUrl = "http://10.13.12.110:7654";
       };
     };
+  };
 }

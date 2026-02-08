@@ -1,0 +1,1410 @@
+# Raspberry Pi 5 -- Secure Boot and LUKS Unlock Guide
+
+This guide covers five layers of boot security for the Raspberry Pi 5 running
+NixOS with LUKS-encrypted root:
+
+1. **TPM2 for LUKS auto-unlock** (recommended, primary)
+2. **YubiKey FIDO2 for LUKS unlock** (optional, YubiKey plugged into Pi)
+3. **YubiKey remote unlock via challenge-response** (optional, YubiKey stays on local machine)
+4. **Tang/Clevis network-bound unlock** (optional, unlock via LAN server)
+5. **RPi5 hardware secure boot** (advanced, optional, irreversible)
+
+---
+
+## Table of Contents
+
+- [Threat Model](#threat-model)
+- [Compatible TPM2 Hardware](#compatible-tpm2-hardware)
+- [Part 1: TPM2 LUKS Auto-Unlock](#part-1-tpm2-luks-auto-unlock)
+  - [How It Works](#how-it-works)
+  - [Why PCR Binding Matters](#why-pcr-binding-matters)
+  - [Prerequisites](#prerequisites)
+  - [Step 1: Install the TPM Module](#step-1-install-the-tpm-module)
+  - [Step 2: Verify TPM Detection](#step-2-verify-tpm-detection)
+  - [Step 3: Back Up the LUKS Header](#step-3-back-up-the-luks-header)
+  - [Step 4: Enroll the TPM](#step-4-enroll-the-tpm)
+  - [Step 5: Reboot and Verify](#step-5-reboot-and-verify)
+  - [Re-Enrollment After Kernel Updates](#re-enrollment-after-kernel-updates)
+  - [Managing Enrollments](#managing-enrollments)
+  - [Fallback: Passphrase Unlock](#fallback-passphrase-unlock)
+- [Part 2: YubiKey FIDO2 LUKS Unlock (Optional)](#part-2-yubikey-fido2-luks-unlock-optional)
+  - [How It Works](#how-it-works-1)
+  - [Prerequisites](#prerequisites-1)
+  - [Enabling FIDO2 in the NixOS Configuration](#enabling-fido2-in-the-nixos-configuration)
+  - [Step 1: Verify Your YubiKey](#step-1-verify-your-yubikey)
+  - [Step 2: Enroll the YubiKey](#step-2-enroll-the-yubikey)
+  - [Step 3: Reboot and Verify](#step-3-reboot-and-verify)
+  - [Enrolling a Backup YubiKey](#enrolling-a-backup-yubikey)
+  - [Re-Enrolling a Previously Enrolled YubiKey](#re-enrolling-a-previously-enrolled-yubikey)
+- [Part 2.5: YubiKey Remote Unlock via Challenge-Response](#part-25-yubikey-remote-unlock-via-challenge-response)
+  - [How It Works](#how-it-works-2)
+  - [FIDO2 vs Challenge-Response](#fido2-vs-challenge-response)
+  - [Prerequisites](#prerequisites-2)
+  - [Step 1: Enter the Dev Shell](#step-1-enter-the-dev-shell)
+  - [Step 2: Run the Enrollment Script](#step-2-run-the-enrollment-script)
+  - [Step 3: Deploy the Updated Configuration](#step-3-deploy-the-updated-configuration)
+  - [Step 4: Test the Remote Unlock](#step-4-test-the-remote-unlock)
+  - [Daily Usage](#daily-usage)
+  - [Managing the Enrollment](#managing-the-enrollment)
+- [Part 2.6: Tang/Clevis Network-Bound LUKS Unlock](#part-26-tangclevis-network-bound-luks-unlock)
+  - [How It Works](#how-it-works-3)
+  - [Roles](#roles)
+  - [Prerequisites](#prerequisites-3)
+  - [Step 1: Deploy the Tang Server](#step-1-deploy-the-tang-server)
+  - [Step 2: Verify the Tang Server](#step-2-verify-the-tang-server)
+  - [Step 3: Create the Clevis JWE Secret](#step-3-create-the-clevis-jwe-secret)
+  - [Step 4: Enable Clevis in the Flake](#step-4-enable-clevis-in-the-flake)
+  - [Step 5: Deploy and Test](#step-5-deploy-and-test)
+  - [Boot Order and Network Requirements](#boot-order-and-network-requirements)
+  - [Fallback Behavior](#fallback-behavior)
+  - [Managing the Tang/Clevis Enrollment](#managing-the-tangclevis-enrollment)
+  - [Security Considerations](#security-considerations)
+  - [Adding More Pis](#adding-more-pis)
+- [Part 3: RPi5 Hardware Secure Boot (Advanced)](#part-3-rpi5-hardware-secure-boot-advanced)
+  - [Overview](#overview)
+  - [Warnings](#warnings)
+  - [How RPi5 Secure Boot Works](#how-rpi5-secure-boot-works)
+  - [Testing Signed Boot (Non-Destructive)](#testing-signed-boot-non-destructive)
+  - [Full Secure Boot Provisioning](#full-secure-boot-provisioning)
+- [Troubleshooting](#troubleshooting)
+- [References](#references)
+
+---
+
+## Threat Model
+
+Understanding what each layer protects against:
+
+| Threat                                   |    LUKS Encryption    |      TPM2 Auto-Unlock      |    YubiKey FIDO2     |            Tang/Clevis             | RPi5 Secure Boot |
+| ---------------------------------------- | :-------------------: | :------------------------: | :------------------: | :--------------------------------: | :--------------: |
+| Stolen SD card / disk read               |          Yes          |            Yes             |         Yes          |                Yes                 |        No        |
+| Brute-force passphrase                   |        Partial        | Yes (no passphrase needed) | Yes (hardware-bound) |     Yes (no passphrase needed)     |        No        |
+| Tampered kernel/initramfs                |          No           |      Yes (PCR-bound)       |          No          |                 No                 |       Yes        |
+| Evil maid (boot modification)            |          No           |      Yes (PCR-bound)       |          No          |                 No                 |       Yes        |
+| Physical device theft (powered off)      |          Yes          |            Yes             |         Yes          |          Yes (needs LAN)           |       Yes        |
+| Device stolen and moved to other network |          No           |             No             |          No          |        Yes (wrong network)         |        No        |
+| Unattended reboot (headless)             | No (needs passphrase) |      Yes (automatic)       |   No (needs touch)   | Yes (automatic, if Tang reachable) |       N/A        |
+
+**Recommendation**: TPM2 is the best choice for headless Raspberry Pi servers --
+it provides automatic LUKS unlock on trusted boots and refuses to unseal the key
+if the boot chain has been tampered with (via PCR binding). The passphrase
+remains as a fallback for recovery.
+
+---
+
+## Compatible TPM2 Hardware
+
+The Raspberry Pi 5 does not have a built-in TPM. You need an external TPM 2.0
+module that connects via **SPI on the 40-pin GPIO header**.
+
+> **WARNING: Do NOT buy PC motherboard TPM modules.** Modules designed for
+> desktop motherboards (e.g., ASUS, MSI, Gigabyte) use a different pin header
+> (typically 12-1 pin or 14-1 pin) that is **physically and electrically
+> incompatible** with the Raspberry Pi GPIO. Even if the chip is identical
+> (e.g., Infineon SLB 9672), the board will not fit. Only buy modules explicitly
+> designed for the Raspberry Pi.
+
+### Compatible Modules
+
+| Module                             | Chip              | Connector        | Status                       | Price (approx.) | Where to Buy                                                                                                                                                                                                |
+| ---------------------------------- | ----------------- | ---------------- | ---------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **LetsTrust TPM**                  | Infineon SLB 9670 | 2x5 pin GPIO     | Available                    | ~30-42 EUR      | [pi3g.com](https://pi3g.com/products/industrial/letstrust-tpm/), [ThePiHut](https://thepihut.com/products/letstrust-tpm-for-raspberry-pi), [Cytron](https://www.cytron.io/p-letstrust-tpm-for-raspberry-pi) |
+| **Joy-it TPM Module**              | Infineon SLB 9670 | 2x5 pin GPIO     | Available                    | ~30-37 EUR      | [Rapid Online](https://www.rapidonline.com/joy-it-raspberry-pi-tpm-module-with-infineon-optiga-slb-9670-00-0808)                                                                                            |
+| **Infineon OPTIGA TPM Eval Board** | Infineon SLB 9672 | RPi HAT (40-pin) | Available                    | ~20-30 EUR      | [Mouser](https://eu.mouser.com/new/infineon/infineon-optiga-tpm-slb-9672-raspberry-pi-board/)                                                                                                               |
+| **Reichelt TPM Module**            | Infineon SLB 9670 | 2x5 pin GPIO     | Available                    | ~25 EUR         | [reichelt.com](https://www.reichelt.com/de/en/shop/product/raspberry_pi_-_trusted_platform_module_tpm_slb9670-253834)                                                                                       |
+| **ANAVI TPM 2.0**                  | Infineon SLB 9672 | 2x5 pin GPIO     | Coming soon (open-source HW) | TBD             | [Crowd Supply](https://crowdsupply.com/anavi-technology/anavi-tpm-2-0-for-raspberry-pi)                                                                                                                     |
+
+All modules use Infineon chips with mainline Linux kernel driver support
+(`tpm_tis_spi`). They are functionally identical from a software perspective --
+choose based on availability and price.
+
+The **LetsTrust TPM** and **Infineon OPTIGA Eval Board** have the most community
+documentation and are the safest choices.
+
+---
+
+## Part 1: TPM2 LUKS Auto-Unlock
+
+### How It Works
+
+```
+Boot sequence with TPM2:
+
+  RPi5 firmware
+      |
+      v
+  kernel + initramfs
+      |
+      v
+  systemd-cryptsetup
+      |
+      +-- TPM2 present?
+      |       |
+      |   yes |            no
+      |       v             v
+      |   Unseal key    Ask passphrase
+      |   from TPM      via console/SSH
+      |       |             |
+      |   PCR match?        |
+      |    yes / no         |
+      |     /     \         |
+      |    v       v        |
+      |  Unlock  Ask        |
+      |  LUKS    passphrase |
+      |    |        \       |
+      |    v         v      v
+      +------- LUKS volume unlocked
+                    |
+              root filesystem mounted
+                    |
+              normal boot continues
+```
+
+When `tpm2-device=auto` is set in the crypttab, `systemd-cryptsetup` will:
+
+1. Detect the TPM2 device at `/dev/tpmrm0`
+2. Attempt to unseal the LUKS key using stored TPM2 policy
+3. Verify PCR (Platform Configuration Register) values match the expected state
+4. If PCRs match (firmware/kernel untampered), unlock the volume automatically
+5. If PCRs mismatch or TPM is absent, fall back to passphrase prompt
+
+The existing passphrase is **never removed** -- it remains as a fallback.
+
+### Why PCR Binding Matters
+
+PCRs are hash measurements of the boot chain stored in the TPM. By binding the
+LUKS key to specific PCR values, the TPM will only release the key if:
+
+- The firmware has not been modified
+- The kernel has not been replaced
+- The boot configuration has not changed
+
+If an attacker swaps the SD card into another Pi or modifies the kernel, the PCR
+values will differ and the TPM will refuse to unseal the key.
+
+### Prerequisites
+
+- A **Raspberry Pi-compatible TPM2 module** (see
+  [Compatible Modules](#compatible-modules))
+- **LUKS2** volume (the disko configuration enforces this via `--type luks2`)
+- **NixOS configuration** already applied with TPM2 support (see
+  `configuration.nix`)
+- The Pi must be booted and accessible (SSH or local console)
+
+### Step 1: Install the TPM Module
+
+1. **Power off** the Raspberry Pi completely
+2. **Attach the TPM module** to the GPIO header:
+   - For 2x5 pin modules (LetsTrust, Joy-it): connect to GPIO pins 17-26 (SPI0
+     CE1 by default)
+   - For HAT modules (Infineon Eval Board): attach to the full 40-pin header
+3. Ensure the module sits flat and pins are aligned correctly
+4. **Power on** the Pi
+
+### Step 2: Verify TPM Detection
+
+After booting with the TPM module attached and the NixOS configuration applied:
+
+```bash
+# Check if TPM device exists
+ls -la /dev/tpm*
+# Expected: /dev/tpm0 and /dev/tpmrm0
+
+# Verify TPM is recognized by systemd
+systemd-cryptenroll --tpm2-device=list
+# Expected: shows the TPM device path
+
+# Check kernel module is loaded
+lsmod | grep tpm
+# Expected: tpm_tis_spi, tpm_tis_core, tpm
+
+# Detailed TPM info
+tpm2_getcap properties-fixed
+```
+
+If `/dev/tpm0` does not appear, see
+[Troubleshooting: TPM not detected](#tpm-not-detected-devtpm0-missing).
+
+### Step 3: Back Up the LUKS Header
+
+**Critical safety step** -- always back up before modifying LUKS key slots:
+
+```bash
+sudo cryptsetup luksHeaderBackup /dev/disk/by-partlabel/disk-sd-system \
+  --header-backup-file /tmp/luks-header-backup.img
+
+# Copy to a safe off-device location immediately!
+scp /tmp/luks-header-backup.img user@other-machine:~/backups/
+
+# Remove local copy after confirming the backup
+rm /tmp/luks-header-backup.img
+```
+
+### Step 4: Enroll the TPM
+
+Enroll the TPM2 device into the LUKS2 volume:
+
+```bash
+sudo systemd-cryptenroll \
+  --tpm2-device=auto \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+This will:
+
+1. Ask for the existing LUKS passphrase (to authorize the enrollment)
+2. Seal a new LUKS key into the TPM, bound to current PCR values
+3. Store the TPM2 token metadata in the LUKS2 header
+
+**Expected output:**
+
+```
+Please enter current passphrase for disk /dev/disk/by-partlabel/disk-sd-system: ****
+New TPM2 token enrolled as key slot 1.
+```
+
+#### Optional: Bind to Specific PCRs
+
+By default, `systemd-cryptenroll` binds to PCR 7 (Secure Boot state). For
+stronger binding on the Raspberry Pi, you can specify additional PCRs:
+
+```bash
+sudo systemd-cryptenroll \
+  --tpm2-device=auto \
+  --tpm2-pcrs=0+2+4+7 \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+PCR meanings:
+
+- **PCR 0**: Firmware (EEPROM/bootloader)
+- **PCR 2**: Kernel and boot configuration
+- **PCR 4**: Boot manager code
+- **PCR 7**: Secure Boot state
+
+> **Note**: Binding to more PCRs increases security but requires re-enrollment
+> more frequently (after any firmware or kernel update). For the RPi5 where
+> kernel updates happen with `nixos-rebuild`, **PCR 7 alone (default) is
+> recommended** to reduce re-enrollment frequency.
+
+### Step 5: Reboot and Verify
+
+```bash
+sudo reboot
+```
+
+If everything is configured correctly:
+
+1. The system boots and reaches `systemd-cryptsetup`
+2. The TPM automatically unseals the LUKS key (no interaction required)
+3. The root filesystem mounts and boot continues
+
+Check the journal after boot to confirm:
+
+```bash
+journalctl -b -u systemd-cryptsetup@crypted.service
+```
+
+Look for messages indicating successful TPM2 unlock.
+
+### Re-Enrollment After Kernel Updates
+
+When the kernel or firmware changes (e.g., after `nixos-rebuild switch` with a
+new kernel), the PCR values change. The TPM will refuse to unseal the key and
+the system will fall back to passphrase unlock.
+
+To re-enroll after an update:
+
+```bash
+# Wipe the old TPM enrollment and re-enroll in one step
+sudo systemd-cryptenroll \
+  --wipe-slot=tpm2 \
+  --tpm2-device=auto \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+> **Tip**: You can create a helper script for this and run it after each
+> `nixos-rebuild switch` that updates the kernel.
+
+### Managing Enrollments
+
+**List enrolled tokens:**
+
+```bash
+sudo cryptsetup luksDump /dev/disk/by-partlabel/disk-sd-system
+```
+
+Look for the `Tokens:` section:
+
+```
+Tokens:
+  0: systemd-tpm2
+        tpm2-pcrs: 7
+        ...
+Keyslots:
+  0: luks2       <-- your passphrase
+  1: luks2       <-- TPM2 key
+```
+
+**Remove TPM2 enrollment:**
+
+```bash
+sudo systemd-cryptenroll --wipe-slot=tpm2 /dev/disk/by-partlabel/disk-sd-system
+```
+
+**Remove a specific key slot by number:**
+
+```bash
+sudo systemd-cryptenroll --wipe-slot=1 /dev/disk/by-partlabel/disk-sd-system
+```
+
+### Fallback: Passphrase Unlock
+
+The original LUKS passphrase (key slot 0) is **always preserved**. If the TPM
+fails to unseal (PCR mismatch, TPM removed, hardware failure):
+
+- **Local**: The passphrase prompt appears on the connected display
+- **Remote**: SSH into the initrd on port 42069 and enter the passphrase:
+
+```bash
+ssh -p 42069 root@<pi-ip>
+# Then enter passphrase when prompted, or run:
+systemd-tty-ask-password-agent
+```
+
+---
+
+## Part 2: YubiKey FIDO2 LUKS Unlock (Optional)
+
+This section describes an alternative (or additional) unlock method using a
+YubiKey FIDO2 token. This can be used instead of or alongside the TPM2 method.
+
+### How It Works
+
+When `fido2-device=auto` is set in the crypttab, `systemd-cryptsetup` will:
+
+1. Scan USB for any FIDO2 token with an enrolled `hmac-secret`
+2. Depending on the enrollment mode:
+   - **PIN + touch**: prompt for both (most secure)
+   - **Touch only**: prompt for physical touch
+   - **Plugged-in only**: unlock automatically if the key is present (headless)
+3. Derive the LUKS key using the FIDO2 `hmac-secret` extension
+4. If no token is found or authentication fails, fall back to passphrase
+
+### Prerequisites
+
+- **YubiKey 5 series** or any FIDO2 key supporting the `hmac-secret` extension
+- **LUKS2** volume (already configured)
+- The Pi must be booted and accessible
+
+### Enabling FIDO2 in the NixOS Configuration
+
+The default `configuration.nix` uses `tpm2-device=auto`. To use FIDO2 instead
+(or in addition), edit the `crypttabExtraOpts` in `configuration.nix`:
+
+```nix
+# For FIDO2 only:
+crypttabExtraOpts = [ "fido2-device=auto" ];
+
+# For TPM2 + FIDO2 (either can unlock):
+crypttabExtraOpts = [ "tpm2-device=auto" "fido2-device=auto" ];
+```
+
+Then rebuild:
+
+```bash
+sudo nixos-rebuild switch --flake .#<hostname>
+```
+
+### Step 1: Verify Your YubiKey
+
+Plug the YubiKey into the Pi and verify it is detected:
+
+```bash
+# Check USB devices
+lsusb | grep -i yubico
+
+# Verify FIDO2 support
+fido2-token -L
+```
+
+You should see output like:
+
+```
+/dev/hidraw0: vendor=0x1050, product=0x0407 (Yubico YubiKey OTP+FIDO+CCID)
+```
+
+### Step 2: Enroll the YubiKey
+
+Back up the LUKS header first (if not already done):
+
+```bash
+sudo cryptsetup luksHeaderBackup /dev/disk/by-partlabel/disk-sd-system \
+  --header-backup-file /tmp/luks-header-backup.img
+```
+
+Choose an enrollment mode:
+
+**Option A: Plugged-in only (headless, no interaction needed)**
+
+The YubiKey just needs to be present in a USB port. No PIN, no touch.
+
+```bash
+sudo systemd-cryptenroll \
+  --fido2-device=auto \
+  --fido2-with-client-pin=no \
+  --fido2-with-user-presence=no \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+**Option B: Touch required (moderate security)**
+
+Requires physical touch of the YubiKey at each boot, but no PIN.
+
+```bash
+sudo systemd-cryptenroll \
+  --fido2-device=auto \
+  --fido2-with-client-pin=no \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+**Option C: PIN + touch (most secure)**
+
+Requires both a FIDO2 PIN and physical touch. Set a PIN first with
+`ykman fido access change-pin`.
+
+```bash
+sudo systemd-cryptenroll \
+  --fido2-device=auto \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+All options will ask for the current LUKS passphrase to authorize enrollment.
+
+### Step 3: Reboot and Verify
+
+```bash
+sudo reboot
+```
+
+Behavior depends on the enrollment mode chosen:
+
+- **Plugged-in only**: boots automatically if YubiKey is present
+- **Touch**: the YubiKey blinks, touch it to unlock
+- **PIN + touch**: enter PIN, then touch
+
+Without the YubiKey, the system falls back to the passphrase prompt.
+
+### Enrolling a Backup YubiKey
+
+Enroll a second YubiKey as backup (uses the same flags as the primary):
+
+```bash
+sudo systemd-cryptenroll \
+  --fido2-device=auto \
+  --fido2-with-client-pin=no \
+  --fido2-with-user-presence=no \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+Store the backup key in a secure off-site location.
+
+### Re-Enrolling a Previously Enrolled YubiKey
+
+The PIN/touch policy is baked into the FIDO2 credential at enrollment time. To
+change the policy (e.g., switch from PIN+touch to plugged-in only), you must
+wipe the old enrollment and re-enroll:
+
+```bash
+# 1. Wipe old FIDO2 enrollment
+sudo systemd-cryptenroll \
+  --wipe-slot=fido2 \
+  /dev/disk/by-partlabel/disk-sd-system
+
+# 2. Re-enroll with new settings
+sudo systemd-cryptenroll \
+  --fido2-device=auto \
+  --fido2-with-client-pin=no \
+  --fido2-with-user-presence=no \
+  /dev/disk/by-partlabel/disk-sd-system
+```
+
+Both steps will ask for the LUKS passphrase to authorize the operation.
+
+---
+
+## Part 2.5: YubiKey Remote Unlock via Challenge-Response
+
+This section describes how to unlock the Pi's LUKS volume **remotely over SSH**
+using a YubiKey that stays plugged into your **local workstation**. Unlike the
+FIDO2 method (Part 2), the YubiKey never needs to be plugged into the Pi.
+
+### How It Works
+
+```
+┌─────────────────────────┐             ┌──────────────────────────┐
+│   Local Machine         │             │   Pi (initrd)            │
+│                         │             │                          │
+│  1. Read salt from      │             │   Booting...             │
+│     ~/.config/yk-luks/  │             │   SSH listening on 42069 │
+│                         │             │   systemd-cryptsetup     │
+│  2. Send salt to        │             │   waiting for password   │
+│     YubiKey (HMAC-SHA1) │             │                          │
+│     ┌──────┐            │             │                          │
+│     │ YK 5 │◄── touch   │             │                          │
+│     └──────┘            │             │                          │
+│                         │  SSH pipe   │                          │
+│  3. Pipe derived key ───┼────────────►│  4. /bin/yk-unlock       │
+│     to Pi initrd        │  port 42069 │     reads stdin          │
+│                         │             │     replies to socket    │
+│                         │             │                          │
+│                         │             │  5. LUKS unlocks         │
+│                         │             │     boot continues       │
+└─────────────────────────┘             └──────────────────────────┘
+```
+
+The flow uses YubiKey's **HMAC-SHA1 challenge-response** mode (slot 2):
+
+1. A random **salt** (challenge) is stored on your local machine
+2. The salt is sent to the YubiKey, which computes an **HMAC-SHA1 response**
+   using its internal secret key
+3. This 40-character hex response is the **derived key**
+4. The derived key is piped over SSH to the Pi's initrd, where `/bin/yk-unlock`
+   sends it to the systemd ask-password socket
+5. `systemd-cryptsetup` receives the key and unlocks the LUKS volume
+
+**Security properties:**
+
+- The **salt** is not secret (it's just a challenge). Without the YubiKey, it's
+  useless.
+- The YubiKey's **internal HMAC-SHA1 key** never leaves the device.
+- The **derived key** is transmitted over an encrypted SSH tunnel.
+- The **passphrase fallback** (key slot 0) always works if the YubiKey is
+  unavailable.
+
+### FIDO2 vs Challenge-Response
+
+| Feature           | FIDO2 (Part 2)               | Challenge-Response (this section)     |
+| ----------------- | ---------------------------- | ------------------------------------- |
+| YubiKey location  | Plugged into the **Pi**      | Plugged into your **local machine**   |
+| Protocol          | FIDO2 hmac-secret            | HMAC-SHA1 challenge-response          |
+| Enrollment tool   | `systemd-cryptenroll`        | `scripts/yubikey-enroll.sh`           |
+| NixOS integration | Native (`fido2-device=auto`) | Custom (`/bin/yk-unlock` in initrd)   |
+| Requires SSH      | No                           | Yes (the whole point)                 |
+| Best for          | Pi with physical YubiKey     | Headless Pi unlocked from workstation |
+
+Both methods can coexist. The challenge-response derived key is just another
+LUKS passphrase from LUKS's perspective.
+
+### Prerequisites
+
+- **YubiKey 5 series** (or any YubiKey supporting HMAC-SHA1 challenge-response)
+- **Local machine** with `yubikey-personalization` installed (available in the
+  flake's dev shell)
+- **Pi must be reachable** via SSH on port 42069 during initrd (already
+  configured)
+- **Pi configuration rebuilt** with the latest `configuration.nix` (which
+  includes `/bin/yk-unlock` and `socat` in the initrd)
+
+### Step 1: Enter the Dev Shell
+
+On your local machine, enter the flake's dev shell to get access to the YubiKey
+tools:
+
+```bash
+cd /path/to/pix5-minimal-encrypted
+nix develop
+```
+
+This provides `ykchalresp`, `ykpersonalize`, and `ykinfo`.
+
+### Step 2: Run the Enrollment Script
+
+The enrollment script handles everything: programming the YubiKey slot,
+generating the salt, computing the derived key, and enrolling it in LUKS.
+
+```bash
+./scripts/yubikey-enroll.sh <hostname> [pi-ip]
+```
+
+For example:
+
+```bash
+# If the Pi is reachable by hostname
+./scripts/yubikey-enroll.sh px5n0
+
+# Or specify the IP explicitly
+./scripts/yubikey-enroll.sh px5n0 10.13.12.249
+```
+
+The script will:
+
+1. **Check your YubiKey** and offer to program slot 2 for HMAC-SHA1
+   challenge-response (if not already set up)
+2. **Generate a random salt** (128 hex characters / 64 bytes of entropy)
+3. **Compute the derived key** by sending the salt to the YubiKey
+4. **SSH to the Pi** (port 22, must be fully booted) and enroll the derived key
+   as a new LUKS key slot. You'll be prompted for the current LUKS passphrase to
+   authorize the enrollment.
+5. **Save the salt** to `~/.config/yk-luks/<hostname>.salt`
+
+> **Important:** Back up the salt file. Without it (and the YubiKey), you cannot
+> compute the derived key. The passphrase fallback always works, but you'd need
+> to re-enroll to use the YubiKey again.
+
+### Step 3: Deploy the Updated Configuration
+
+The `configuration.nix` includes the `/bin/yk-unlock` helper and `socat` in the
+initrd. If you haven't deployed this yet, build and deploy to the Pi:
+
+```bash
+# From your local machine (cross-compile or use nixos-anywhere)
+# Or SSH to the Pi and rebuild:
+ssh root@<pi-ip>
+cd /path/to/pix5-minimal-encrypted
+sudo nixos-rebuild switch --flake .#<hostname>
+```
+
+### Step 4: Test the Remote Unlock
+
+Reboot the Pi and wait for it to reach the initrd stage (SSH on port 42069):
+
+```bash
+# Reboot the Pi
+ssh root@<pi-ip> 'sudo reboot'
+
+# Wait ~30 seconds for the Pi to reach initrd, then:
+./scripts/yubikey-unlock.sh px5n0 10.13.12.249
+```
+
+You should see:
+
+```
+Computing YubiKey response (touch may be required)...
+Sending unlock key to 10.13.12.249:42069...
+Unlock key sent.
+Done. The Pi should continue booting if the key was accepted.
+```
+
+If TPM2 or FIDO2 auto-unlock triggers first (because that hardware is also
+present), the challenge-response unlock is not needed -- the Pi will boot
+automatically.
+
+### Daily Usage
+
+Each time the Pi needs unlocking (e.g., after a reboot or power cycle):
+
+```bash
+# From your local machine, with YubiKey plugged in:
+./scripts/yubikey-unlock.sh px5n0 10.13.12.249
+```
+
+Or for the second Pi:
+
+```bash
+./scripts/yubikey-unlock.sh px5n1 10.13.12.250
+```
+
+> **Tip:** If the Pi uses a static IP, you can omit the IP argument and let the
+> script use the hostname directly (assuming DNS/mDNS resolves it).
+
+### Managing the Enrollment
+
+**List LUKS key slots** (on the Pi):
+
+```bash
+sudo cryptsetup luksDump /dev/disk/by-partlabel/disk-sd-system
+```
+
+Look for the `Keyslots:` section. Your passphrase is slot 0. The
+challenge-response derived key will be in a higher-numbered slot.
+
+**Remove the challenge-response enrollment** (on the Pi):
+
+```bash
+# Replace N with the slot number shown in luksDump
+sudo cryptsetup luksKillSlot /dev/disk/by-partlabel/disk-sd-system N
+```
+
+**Re-enroll with a new salt** (on your local machine):
+
+```bash
+./scripts/yubikey-enroll.sh px5n0 10.13.12.249
+# Choose "y" when asked to generate a new salt
+```
+
+This adds a new key slot. Remember to remove the old slot afterward.
+
+**Enroll a second YubiKey:**
+
+Program the second YubiKey's slot 2 with the **same HMAC-SHA1 secret** using
+`ykpersonalize`, then run the enrollment script. The same salt will produce the
+same derived key, so both YubiKeys work with the same LUKS key slot.
+
+Alternatively, enroll each YubiKey separately (different salts, different LUKS
+key slots) for independent revocation.
+
+---
+
+## Part 2.6: Tang/Clevis Network-Bound LUKS Unlock
+
+This section describes how to automatically unlock a Pi's LUKS volume using
+**network-bound disk encryption (NBDE)**. A **Tang server** on one Pi (e.g.
+px5n0) provides cryptographic key escrow, and a **Clevis client** on another Pi
+(e.g. px5n1) contacts the Tang server during boot to unlock its LUKS volume --
+no passphrase, no hardware token, no TPM required on the client.
+
+The Pi only unlocks when it can reach the Tang server on the local network. If
+someone steals the SD card and boots it elsewhere, Tang is unreachable and the
+volume stays locked.
+
+### How It Works
+
+```
+┌──────────────────────────────────┐
+│   Tang Server (px5n0)            │
+│                                  │
+│   services.tang on port 7654     │
+│   Holds signing/exchange keys    │
+│   in /var/lib/tang               │
+│                                  │
+│   Responds to Clevis requests    │
+│   using McCallum-Relyea protocol │
+│   (Diffie-Hellman key exchange)  │
+└──────────────┬───────────────────┘
+               │
+          LAN / private network
+               │
+┌──────────────┴───────────────────┐
+│   Clevis Client (px5n1)          │
+│                                  │
+│   Boot sequence:                 │
+│   1. kernel + initramfs          │
+│   2. Network comes up (DHCP)     │
+│   3. Clevis reads JWE secret     │
+│   4. Contacts Tang server        │
+│   5. Tang returns key material   │
+│   6. Clevis derives LUKS key     │
+│   7. LUKS volume unlocked        │
+│   8. Root filesystem mounted     │
+│                                  │
+│   Fallback: passphrase / TPM /   │
+│   YubiKey if Tang unreachable    │
+└──────────────────────────────────┘
+```
+
+**How the McCallum-Relyea protocol works (simplified):**
+
+1. During enrollment, Clevis generates a random key and encrypts the LUKS
+   passphrase with it. The random key is then split: one half is stored in the
+   JWE (on the client), the other half is derived from a Diffie-Hellman exchange
+   with the Tang server's public key.
+2. At boot, Clevis sends its half of the exchange to Tang. Tang computes the
+   shared secret and returns it. Clevis combines both halves to reconstruct the
+   key and decrypt the LUKS passphrase.
+3. Tang never sees the LUKS passphrase -- it only performs a DH operation.
+
+### Roles
+
+| Role              | Host                         | What it does                                          |
+| ----------------- | ---------------------------- | ----------------------------------------------------- |
+| **Tang server**   | px5n0 (has TPM)              | Runs `services.tang`, responds to Clevis key requests |
+| **Clevis client** | px5n1 (or any additional Pi) | Contacts Tang at boot to unlock LUKS                  |
+
+These roles are configured in `flake.nix` via `tangServer = true` (server) and
+`tangUnlockUrl = "http://..."` (client). Any number of Pis can be Clevis clients
+pointing at the same Tang server.
+
+### Prerequisites
+
+- **Tang server Pi** (e.g. px5n0) must be deployed and reachable on the network
+- **Clevis client Pi** (e.g. px5n1) must have LUKS2 encryption (already
+  configured)
+- Both Pis must be on the **same network** (or have routed connectivity)
+- The Tang server should be assigned a **known IP or hostname** reachable from
+  the client's initrd (static IP recommended; mDNS may not resolve in initrd)
+
+### Step 1: Deploy the Tang Server
+
+The Tang server is already configured in `configuration.nix` -- it activates
+when `tangServer = true` is set in `flake.nix`.
+
+For px5n0, this is already set:
+
+```nix
+# In flake.nix
+px5n0 = mkPi5System {
+  hostname = "px5n0";
+  extraDisks = px5n0Disks;
+  tangServer = true;
+};
+```
+
+Build and deploy:
+
+```bash
+# On px5n0, or via nixos-anywhere / deploy-rs
+sudo nixos-rebuild switch --flake .#px5n0
+```
+
+Tang keys are auto-generated on the first client request and stored in
+`/var/lib/tang`. No manual key generation is needed.
+
+### Step 2: Verify the Tang Server
+
+After deploying, verify Tang is running and accessible:
+
+```bash
+# On the Tang server (px5n0)
+systemctl status tangd.socket
+# Expected: active (listening) on port 7654
+
+# From the Clevis client Pi (or any machine on the same network)
+curl -sfS http://<tang-server-ip>:7654/adv
+# Expected: JSON output with the server's advertisement (public keys)
+```
+
+If `curl` returns JSON with `keys`, Tang is working. Save the server IP -- you
+will need it for enrollment.
+
+### Step 3: Create the Clevis JWE Secret
+
+On the **Clevis client Pi** (px5n1), or any machine that can reach Tang and has
+`clevis` installed (e.g. from the dev shell):
+
+```bash
+# Enter the dev shell (on your workstation)
+cd /path/to/pix5-minimal-encrypted
+nix develop
+
+# Create the JWE secret file
+# Replace <tang-ip> with the Tang server's IP address
+echo -n "YOUR-LUKS-PASSPHRASE" | clevis encrypt tang '{"url":"http://<tang-ip>:7654"}' > keys/clevis-tang.jwe
+echo -n "debug" | clevis encrypt tang '{"url":"http://10.13.12.110:7654"}' > keys/clevis-tang.jwe
+```
+
+You will be shown the Tang server's key thumbprint and asked to confirm it
+(similar to SSH host key verification). Verify it matches what Tang advertises.
+
+> **Important:** The LUKS passphrase you enter here is the one you set during
+> initial disk encryption. Clevis encrypts it into the JWE file using Tang's
+> public key. The cleartext passphrase is not stored anywhere.
+
+> **Security note:** The JWE file (`keys/clevis-tang.jwe`) will be copied to the
+> Nix store during build, making it world-readable on the system. See
+> [Security Considerations](#security-considerations) for details and
+> mitigations.
+
+### Step 4: Enable Clevis in the Flake
+
+Uncomment the `tangUnlockUrl` line for px5n1 in `flake.nix`:
+
+```nix
+px5n1 = mkPi5System {
+  hostname = "px5n1";
+  extraDisks = px5n1Disks;
+  tangUnlockUrl = "http://<tang-ip>:7654";  # use the Tang server's IP
+};
+```
+
+> **Tip:** Use a static IP rather than a hostname. mDNS (`.local`) may not
+> resolve reliably in the initrd before the root filesystem is mounted. If your
+> Tang server has a static IP (e.g. `10.13.12.249`), use that.
+
+### Step 5: Deploy and Test
+
+Build and deploy the Clevis client:
+
+```bash
+sudo nixos-rebuild switch --flake .#px5n1
+```
+
+Then reboot and verify:
+
+```bash
+sudo reboot
+```
+
+If Tang is reachable, the LUKS volume unlocks automatically (no passphrase
+prompt). Check the journal after boot:
+
+```bash
+journalctl -b -u clevis-luks-unlock.service
+# or
+journalctl -b | grep -i clevis
+```
+
+If Tang is **not** reachable (server down, wrong network), the system falls back
+to the passphrase prompt (and/or TPM/YubiKey if configured).
+
+### Boot Order and Network Requirements
+
+- The Clevis client needs **network access** in the initrd to contact Tang. The
+  `rd.neednet=1` kernel parameter is automatically added when `tangUnlockUrl` is
+  set, ensuring the initrd waits for network before attempting LUKS unlock.
+- The Tang server (px5n0) should be **powered on and booted** before the Clevis
+  client (px5n1) reaches its initrd. If Tang is not yet ready, the client will
+  retry briefly and then fall back to passphrase.
+- Both machines use `ip=dhcp` in kernel parameters. For more reliable initrd
+  networking, consider using a static IP for the Tang server.
+- If you use a **UPS or always-on power**, the Tang server should recover and be
+  available before clients need it after a power outage.
+
+### Fallback Behavior
+
+The Clevis/Tang unlock method does **not** replace existing unlock methods. All
+existing methods remain available as fallbacks:
+
+1. **Clevis/Tang** -- automatic, if Tang server is reachable on the network
+2. **TPM2** -- automatic, if TPM is present and PCRs match
+3. **FIDO2 (YubiKey)** -- if YubiKey is plugged in
+4. **Passphrase** -- always available via console or SSH (port 42069)
+
+The system tries each method in order. The first one to succeed unlocks the
+volume.
+
+### Managing the Tang/Clevis Enrollment
+
+**Verify the JWE is valid:**
+
+```bash
+# On a machine with clevis installed and Tang reachable
+cat keys/clevis-tang.jwe | clevis decrypt
+# Should output the LUKS passphrase (confirms Tang can decrypt it)
+```
+
+**Re-create the JWE** (e.g. after changing the LUKS passphrase):
+
+```bash
+echo -n "NEW-LUKS-PASSPHRASE" | clevis encrypt tang '{"url":"http://<tang-ip>:7654"}' > keys/clevis-tang.jwe
+# Rebuild the Clevis client
+sudo nixos-rebuild switch --flake .#px5n1
+```
+
+**Rotate Tang server keys:**
+
+```bash
+# On the Tang server
+# Move old keys to a temporary directory for a grace period
+sudo tangd-keygen /var/lib/tang
+# After all clients are re-enrolled, remove old keys
+```
+
+After rotating Tang keys, all Clevis clients must re-create their JWE files
+(repeat Step 3) because the old JWE was encrypted with the old server keys.
+
+**Remove Tang/Clevis from a client:**
+
+1. Set `tangUnlockUrl` back to `null` (or comment it out) in `flake.nix`
+2. Rebuild: `sudo nixos-rebuild switch --flake .#px5n1`
+3. Optionally delete `keys/clevis-tang.jwe`
+
+### Security Considerations
+
+**JWE in the Nix store:**
+
+The NixOS Clevis module copies the JWE secret file into the Nix store, which is
+world-readable. This is a
+[known limitation](https://github.com/NixOS/nixpkgs/issues/335105).
+
+The practical impact is limited:
+
+- The JWE file is **encrypted** and can only be decrypted by contacting the Tang
+  server (network access required).
+- An unprivileged user **on the Clevis client** who has both Nix store access
+  and network access to Tang could run `clevis decrypt` to recover the LUKS
+  passphrase. However, that user is already logged into the running (unlocked)
+  system, so the passphrase provides no additional access beyond what they
+  already have.
+- The main risk is if the JWE file is **exfiltrated** and the attacker also has
+  access to the Tang server's network.
+
+**Mitigations:**
+
+- Keep the Tang server on a **trusted private network** (not exposed to the
+  internet). The `ipAddressAllow` setting in the NixOS config restricts Tang to
+  private IP ranges by default.
+- Use the existing `tangIpAllowList` parameter to further restrict which IPs can
+  reach Tang.
+- Monitor for unauthorized access to the Tang server.
+
+**What Tang/Clevis does NOT protect against:**
+
+- **Tampered boot chain** -- unlike TPM2, Clevis does not verify the kernel or
+  initramfs. An attacker who modifies the boot partition can still unlock the
+  volume (as long as Tang is reachable). Combine with TPM2 or secure boot for
+  defense in depth.
+- **Tang server compromise** -- if an attacker controls the Tang server, they
+  can respond to any Clevis request. Protect the Tang server with TPM2 for its
+  own LUKS volume.
+
+### Adding More Pis
+
+To add another Pi as a Clevis client, add it to `flake.nix`:
+
+```nix
+px5n2 = mkPi5System {
+  hostname = "px5n2";
+  tangUnlockUrl = "http://<tang-ip>:7654";
+};
+```
+
+Then follow Steps 3-5 above. Each client needs its own JWE file (or they can
+share one if they use the same LUKS passphrase, though separate files are
+recommended for independent management).
+
+The Tang server requires no changes -- it serves any Clevis client that knows
+its URL. The `ipAddressAllow` list is the only access control.
+
+---
+
+## Part 3: RPi5 Hardware Secure Boot (Advanced)
+
+### Overview
+
+The Raspberry Pi 5 (BCM2712) supports hardware-enforced secure boot through:
+
+1. **Signed EEPROM firmware** -- the boot ROM verifies the second-stage firmware
+2. **Signed boot images** -- the bootloader verifies `boot.img` + `boot.sig`
+3. **OTP fuse programming** -- public key hash burned into one-time-programmable
+   memory
+
+### Warnings
+
+> **OTP fuse programming is IRREVERSIBLE.**
+>
+> Once you burn the public key hash into the BCM2712 OTP fuses:
+>
+> - The device will **only** boot signed firmware and signed boot images
+> - If the private key is **lost**, the device is **permanently bricked**
+> - There is **no way to undo** this operation
+> - This is fundamentally different from x86 secure boot (which can be disabled
+>   in BIOS)
+>
+> **There is no existing NixOS module for RPi5 secure boot.** The integration
+> described below requires manual work and must be redone after every
+> `nixos-rebuild switch`.
+
+### How RPi5 Secure Boot Works
+
+```
+Boot chain (with secure boot enabled):
+
+  BCM2712 Boot ROM
+      |
+      | verifies signature using OTP public key hash
+      v
+  EEPROM Firmware (recovery.bin / bootcode5.bin)
+      |   - counter-signed with customer private key
+      |   - signed with Raspberry Pi key
+      |
+      | verifies boot.sig against boot.img
+      v
+  boot.img (ramdisk containing boot partition)
+      |   - kernel, initramfs, device trees, config.txt
+      |   - packed into a FAT filesystem image
+      |   - signed with customer private key -> boot.sig
+      |
+      v
+  Linux kernel + initramfs
+      |
+      v
+  LUKS unlock (TPM2 / passphrase / YubiKey)
+      |
+      v
+  Root filesystem
+```
+
+### Testing Signed Boot (Non-Destructive)
+
+You can test the `boot.img` mechanism **without** burning OTP fuses. This
+verifies the boot image format works but does **not** enforce signature
+verification.
+
+**1. Generate a signing key pair:**
+
+```bash
+# On your workstation (not the Pi)
+openssl genrsa -out private.pem 2048
+openssl rsa -in private.pem -pubout -out public.pem
+```
+
+**2. Create boot.img from the boot partition:**
+
+```bash
+# On the Pi, after a successful nixos-rebuild switch
+# Package the boot partition contents into a FAT image
+BOOT_SIZE=$(du -sb /boot | cut -f1)
+# Add 10% padding
+IMG_SIZE=$(( BOOT_SIZE * 110 / 100 ))
+
+dd if=/dev/zero of=/tmp/boot.img bs=1 count=0 seek=$IMG_SIZE
+mkfs.vfat /tmp/boot.img
+mcopy -i /tmp/boot.img -s /boot/* ::/
+```
+
+**3. Sign the boot image:**
+
+```bash
+# On your workstation
+openssl dgst -sha256 -sign private.pem -out boot.sig boot.img
+```
+
+**4. Place on the FIRMWARE partition:**
+
+```bash
+sudo cp /tmp/boot.img /boot/firmware/boot.img
+sudo cp boot.sig /boot/firmware/boot.sig
+```
+
+**5. Enable boot_ramdisk in config.txt:**
+
+Add `boot_ramdisk=1` to the config.txt on the firmware partition. The Pi
+firmware will then unpack `boot.img` into memory and boot from it.
+
+> **Note**: This test only proves the boot.img format works. Without OTP fuses
+> programmed, signature verification is **not enforced** -- the Pi will boot
+> even with an invalid signature.
+
+### Full Secure Boot Provisioning
+
+For production deployment where boot chain integrity must be enforced.
+
+**Requirements:**
+
+- A **separate host machine** running Raspberry Pi OS (Debian, 64-bit)
+- USB cable connecting host to the Pi
+- The `rpi-sb-provisioner` tool
+- The private key generated above
+
+**1. Install rpi-sb-provisioner on the host:**
+
+```bash
+# On the provisioning host (NOT the Pi)
+git clone https://github.com/raspberrypi/rpi-sb-provisioner.git
+cd rpi-sb-provisioner
+# Follow the README for installation
+```
+
+**2. Prepare the Pi for provisioning:**
+
+- Power off the Pi
+- Set the nRPIBOOT jumper (or hold power button before power on)
+- Remove EEPROM write protection
+- Connect USB from the host to the Pi
+
+**3. Sign the EEPROM firmware:**
+
+```bash
+# Using the usbboot tools
+cd secure-boot-recovery5
+../tools/update-pieeprom.sh -f -k "${KEY_FILE}"
+```
+
+The `-f` flag enables firmware counter-signing with your private key.
+
+**4. Flash the signed EEPROM:**
+
+```bash
+mkdir -p metadata
+../rpiboot -d . -j metadata
+```
+
+**5. Verify (before locking):**
+
+Boot the Pi and confirm it works correctly with the signed EEPROM. Check UART
+output for signature verification messages.
+
+**6. Lock secure boot (IRREVERSIBLE):**
+
+> **FINAL WARNING**: This step permanently burns the public key hash into OTP
+> fuses. The device will never boot unsigned firmware again. If the private key
+> is lost, the device becomes e-waste.
+
+Edit `config.txt` in the `secure-boot-recovery5` directory:
+
+```
+program_pubkey=1
+```
+
+Then re-flash the EEPROM as in step 4.
+
+**7. NixOS integration (ongoing maintenance):**
+
+After every `nixos-rebuild switch`, you must:
+
+1. Rebuild `boot.img` from `/boot` contents
+2. Sign it with the private key
+3. Place `boot.img` and `boot.sig` on the firmware partition
+
+This can be partially automated with an activation script, but there is no
+official NixOS module for this workflow.
+
+---
+
+## Troubleshooting
+
+### TPM not detected (`/dev/tpm0` missing)
+
+**Symptom**: No `/dev/tpm0` or `/dev/tpmrm0` after boot.
+
+**Solutions**:
+
+1. Verify the module is physically connected and properly seated
+2. Check kernel messages for TPM errors:
+   ```bash
+   dmesg | grep -i tpm
+   ```
+3. Verify the device tree overlay is active:
+   ```bash
+   ls /proc/device-tree/soc/spi*/tpm*
+   ```
+4. Ensure SPI is enabled (should be via dtoverlay):
+   ```bash
+   ls /dev/spi*
+   ```
+5. Check that kernel modules are loaded:
+   ```bash
+   lsmod | grep tpm_tis_spi
+   ```
+
+### TPM2 unlock fails after kernel update
+
+**Symptom**: System falls back to passphrase after `nixos-rebuild switch`.
+
+This is expected behavior -- PCR values change when the kernel changes.
+Re-enroll the TPM key:
+
+```bash
+sudo systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto /dev/disk/by-partlabel/disk-sd-system
+```
+
+### YubiKey not detected during boot
+
+**Symptom**: System falls back to passphrase even with YubiKey plugged in.
+
+**Solutions**:
+
+1. Ensure the YubiKey is plugged in **before** powering on the Pi
+2. Try a different USB port (USB 2.0 ports may be more reliable in early boot)
+3. Check that kernel modules are loaded:
+   ```bash
+   lsmod | grep -E "hid|fido"
+   ```
+4. Verify the enrollment is intact:
+   ```bash
+   sudo cryptsetup luksDump /dev/disk/by-partlabel/disk-sd-system
+   ```
+
+### FIDO2 unlock fails with library error
+
+**Symptom**: `loading "libpcsclite_real.so.1" failed` in journal.
+
+This is a known NixOS issue
+([nixpkgs#329135](https://github.com/NixOS/nixpkgs/issues/329135)) affecting
+PKCS#11 mode. FIDO2 mode (which uses `libfido2` directly) may not be affected.
+If you encounter this:
+
+1. The system will fall back to passphrase unlock automatically
+2. Check if the issue has been resolved in a newer nixpkgs revision
+3. As a workaround, you may need to add `libfido2` to initrd store paths:
+   ```nix
+   boot.initrd.systemd.storePaths = [ pkgs.libfido2 ];
+   ```
+
+### Remote YubiKey unlock: "No pending password queries found"
+
+**Symptom**: `yk-unlock` reports no pending queries when running the unlock
+script.
+
+**Solutions**:
+
+1. The Pi may not have reached the LUKS password prompt yet. Wait a few more
+   seconds and retry:
+   ```bash
+   sleep 10 && ./scripts/yubikey-unlock.sh px5n0 10.13.12.249
+   ```
+2. TPM2 or FIDO2 may have already unlocked the volume automatically. Check if
+   the Pi finished booting (try SSH on port 22).
+3. Verify the initrd SSH is actually running:
+   ```bash
+   ssh -p 42069 -o ConnectTimeout=5 root@<pi-ip> echo ok
+   ```
+
+### Remote YubiKey unlock: "Connection refused" on port 42069
+
+**Symptom**: Cannot SSH to the Pi's initrd.
+
+**Solutions**:
+
+1. The Pi may still be in early boot (before networking). Wait longer.
+2. If the Pi uses DHCP, the IP may have changed. Check your router's DHCP
+   leases.
+3. The Pi may have already booted past initrd. Try SSH on port 22 instead.
+
+### Remote YubiKey unlock: key rejected (wrong passphrase)
+
+**Symptom**: `yk-unlock` sends the key but LUKS doesn't unlock.
+
+**Solutions**:
+
+1. Verify the salt file matches what was used during enrollment:
+   ```bash
+   cat ~/.config/yk-luks/px5n0.salt
+   ```
+2. Verify the YubiKey produces the expected response:
+   ```bash
+   printf '%s' "$(cat ~/.config/yk-luks/px5n0.salt)" | ykchalresp -2 -H -i-
+   ```
+3. If you reprogrammed the YubiKey slot since enrollment, the HMAC-SHA1 secret
+   changed. Re-enroll: `./scripts/yubikey-enroll.sh px5n0`
+4. The passphrase fallback always works -- SSH in manually and use
+   `systemd-tty-ask-password-agent`.
+
+### LUKS header corrupted
+
+If the LUKS header becomes corrupted and no unlock method works:
+
+```bash
+# Boot from a live USB/SD and restore the header backup
+sudo cryptsetup luksHeaderRestore /dev/disk/by-partlabel/disk-sd-system \
+  --header-backup-file luks-header-backup.img
+```
+
+This is why the header backup step is critical before any enrollment.
+
+### TPM or YubiKey lost/broken
+
+1. Boot with the passphrase (fallback always available)
+2. Remove the old enrollment:
+   ```bash
+   # For TPM2:
+   sudo systemd-cryptenroll --wipe-slot=tpm2 /dev/disk/by-partlabel/disk-sd-system
+   # For FIDO2:
+   sudo systemd-cryptenroll --wipe-slot=fido2 /dev/disk/by-partlabel/disk-sd-system
+   ```
+3. Enroll the replacement device
+
+---
+
+## References
+
+- [NixOS Wiki: TPM](https://wiki.nixos.org/wiki/TPM) -- NixOS TPM2 configuration
+- [systemd-cryptenroll(1)](https://www.freedesktop.org/software/systemd/man/latest/systemd-cryptenroll.html)
+  -- official man page
+- [NixOS Secure Boot + TPM FDE Guide](https://jnsgr.uk/2024/04/nixos-secure-boot-tpm-fde/)
+  -- comprehensive NixOS + TPM2 guide
+- [LetsTrust TPM Documentation](https://letstrust.de/) -- LetsTrust TPM setup
+  instructions
+- [Infineon OPTIGA TPM Eval Board](https://www.infineon.com/cms/cn/product/evaluation-boards/optiga-tpm-9672-rpi-eval/)
+  -- official Infineon eval board
+- [NixOS Wiki: YubiKey FDE](https://wiki.nixos.org/wiki/Yubikey_based_Full_Disk_Encryption_(FDE)_on_NixOS)
+  -- NixOS-specific YubiKey guide
+- [RPi5 Secure Boot (usbboot)](https://github.com/raspberrypi/usbboot/tree/master/secure-boot-recovery5)
+  -- official RPi5 secure boot tooling
+- [rpi-sb-provisioner](https://github.com/raspberrypi/rpi-sb-provisioner) --
+  automated secure boot provisioning
+- [RPi Bootloader Configuration](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#raspberry-pi-bootloader-configuration)
+  -- firmware config.txt options
+- [nixpkgs#329135](https://github.com/NixOS/nixpkgs/issues/329135) -- known
+  FIDO2 boot issue tracker
